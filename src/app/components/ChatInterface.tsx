@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import Markdown from "./Markdown";
 
 type Message = {
   id: string;
@@ -106,10 +107,24 @@ export default function ChatInterface() {
   const [input, setInput] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamTargetIdRef = useRef<string | null>(null);
   const assistantMsgIdRef = useRef<string | null>(null);
+
+  async function copyMessage(id: string, content: string) {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedMessageId(id);
+      setTimeout(
+        () => setCopiedMessageId((c) => (c === id ? null : c)),
+        2000
+      );
+    } catch {
+      // clipboard unavailable
+    }
+  }
 
   const activeConversation = conversations.find((c) => c.id === activeId);
   const lastMessage =
@@ -355,7 +370,7 @@ export default function ChatInterface() {
                       <span
                         role="button"
                         onClick={(e) => deleteConversation(e, c.id)}
-                        className="ml-1 opacity-0 group-hover:opacity-100 touch:opacity-100 p-0.5 rounded hover:text-red-500 transition-opacity"
+                        className="ml-1 sm:opacity-0 sm:group-hover:opacity-100 p-0.5 rounded hover:text-red-500 transition-opacity"
                         title="Delete"
                       >
                         <svg
@@ -465,7 +480,7 @@ export default function ChatInterface() {
               {activeConversation.messages.map((msg) => (
                 <div
                   key={msg.id}
-                  className={`flex gap-3 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                  className={`flex gap-3 group ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                 >
                   {msg.role === "assistant" && (
                     <div className="w-8 h-8 rounded-full bg-zinc-900 dark:bg-zinc-100 flex-shrink-0 flex items-center justify-center mt-0.5">
@@ -483,25 +498,68 @@ export default function ChatInterface() {
                     className={`flex flex-col gap-1 max-w-[85%] sm:max-w-[80%] ${msg.role === "user" ? "items-end" : "items-start"}`}
                   >
                     <div
-                      className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
+                      className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
                         msg.role === "user"
-                          ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-br-sm"
+                          ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-br-sm whitespace-pre-wrap"
                           : "bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-bl-sm"
                       }`}
                     >
-                      {msg.content === "" && isLoading ? (
-                        <span className="inline-flex gap-1 py-0.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce" />
-                          <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce [animation-delay:120ms]" />
-                          <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce [animation-delay:240ms]" />
-                        </span>
+                      {msg.role === "assistant" ? (
+                        msg.content === "" && isLoading ? (
+                          <span className="inline-flex gap-1 py-0.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce [animation-delay:120ms]" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce [animation-delay:240ms]" />
+                          </span>
+                        ) : (
+                          <Markdown content={msg.content} />
+                        )
                       ) : (
                         msg.content
                       )}
                     </div>
-                    <span className="text-[11px] text-zinc-400 dark:text-zinc-500 px-1">
-                      {formatTime(msg.timestamp)}
-                    </span>
+                    <div className="flex items-center gap-2 px-1">
+                      <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
+                        {formatTime(msg.timestamp)}
+                      </span>
+                      <button
+                        onClick={() => copyMessage(msg.id, msg.content)}
+                        className="p-0.5 rounded text-zinc-400 dark:text-zinc-500
+                                   hover:text-zinc-700 dark:hover:text-zinc-300
+                                   sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+                        title="Copy message"
+                      >
+                        {copiedMessageId === msg.id ? (
+                          <svg
+                            className="w-3.5 h-3.5 text-emerald-500"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={3}
+                              d="M5 13l4 4L19 7"
+                            />
+                          </svg>
+                        ) : (
+                          <svg
+                            className="w-3.5 h-3.5"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M8 5H6a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M8 5a2 2 0 002 2h4a2 2 0 002-2M8 5a2 2 0 012-2h4a2 2 0 012 2"
+                            />
+                          </svg>
+                        )}
+                      </button>
+                    </div>
                   </div>
 
                   {msg.role === "user" && (

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import {
   collection,
   query,
@@ -8,6 +9,7 @@ import {
   onSnapshot,
   addDoc,
   doc,
+  setDoc,
   updateDoc,
   deleteDoc,
   getDocs,
@@ -46,19 +48,38 @@ function formatDate(date: Date): string {
   return `${days} days ago`;
 }
 
-export default function ChatInterface() {
+function genId(): string {
+  return "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+export default function ChatInterface({
+  chatId,
+}: {
+  chatId?: string | null;
+}) {
   const { user, initializing, configured, signIn, signOut, error } = useAuth();
+  const router = useRouter();
 
   const [chats, setChats] = useState<ChatMeta[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [pendingAssistant, setPendingAssistant] = useState<Message | null>(null);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  // Active chat is driven by the URL (?chat=<id>), so each chat has a stable,
+  // shareable route. null = no chat selected (new chat / home).
+  const activeId = chatId ?? null;
+  // Temporary chat: only startable from the fresh state. Conversations live in
+  // local state only (no id, no Firestore) and are lost on refresh.
+  const [isTemporary, setIsTemporary] = useState(false);
+  const [tempMessages, setTempMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // id of the assistant message we've persisted; when the realtime listener
+  // reports it, we drop the transient streaming bubble (avoids a flash of the
+  // reply appearing twice before it disappears).
+  const persistedAssistantIdRef = useRef<string | null>(null);
 
   // Realtime sidebar: this user's chats
   useEffect(() => {
@@ -101,6 +122,16 @@ export default function ChatInterface() {
         };
       });
       setMessages(msgs);
+
+      // Once the persisted assistant reply is visible in the streamed data,
+      // swap the transient streaming bubble for it — no duplicate flash.
+      if (
+        persistedAssistantIdRef.current &&
+        msgs.some((m) => m.id === persistedAssistantIdRef.current)
+      ) {
+        persistedAssistantIdRef.current = null;
+        setPendingAssistant(null);
+      }
     });
     return unsub;
   }, [user, activeId]);
@@ -116,10 +147,10 @@ export default function ChatInterface() {
   }
 
   const activeConversation = chats.find((c) => c.id === activeId);
-  const allMessages: Message[] = [
-    ...messages,
-    ...(pendingAssistant ? [pendingAssistant] : []),
-  ];
+  const isTemporaryMode = isTemporary;
+  const allMessages: Message[] = isTemporaryMode
+    ? [...tempMessages, ...(pendingAssistant ? [pendingAssistant] : [])]
+    : [...messages, ...(pendingAssistant ? [pendingAssistant] : [])];
   const lastMessage = allMessages[allMessages.length - 1];
 
   useEffect(() => {
@@ -137,14 +168,26 @@ export default function ChatInterface() {
   }, []);
 
   function newChat() {
-    setActiveId(null);
+    router.replace("/");
+    setIsTemporary(false);
+    setTempMessages([]);
+    setInput("");
+    setSidebarOpen(false);
+    inputRef.current?.focus();
+  }
+
+  function startTemporaryChat() {
+    setIsTemporary(true);
+    setTempMessages([]);
     setInput("");
     setSidebarOpen(false);
     inputRef.current?.focus();
   }
 
   function selectConversation(id: string) {
-    setActiveId(id);
+    router.push(`/?chat=${id}`);
+    setIsTemporary(false);
+    setTempMessages([]);
     setInput("");
     if (window.innerWidth < 768) setSidebarOpen(false);
   }
@@ -158,7 +201,7 @@ export default function ChatInterface() {
       const snap = await getDocs(msgCol);
       await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
       await deleteDoc(doc(db, base));
-      if (activeId === id) setActiveId(null);
+      if (activeId === id) router.replace("/");
     } catch (err) {
       console.error("Failed to delete chat", err);
     }
@@ -166,42 +209,60 @@ export default function ChatInterface() {
 
   async function sendMessage() {
     const text = input.trim();
-    if (!text || isLoading || !db || !user) return;
+    if (!text || isLoading || !user) return;
 
+    // Clear the input immediately so it doesn't linger while writes happen.
+    setInput("");
+
+    const tempMode = isTemporaryMode;
     const wasNew = !activeId;
     let chatId: string | null = activeId;
 
-    try {
-      if (wasNew) {
-        const chatRef = await addDoc(collection(db, `users/${user.uid}/chats`), {
-          title: text.length > 40 ? text.slice(0, 40) + "…" : text,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        });
-        chatId = chatRef.id;
-        setActiveId(chatId);
-      } else {
-        updateDoc(doc(db, `users/${user.uid}/chats/${chatId}`), {
-          updatedAt: Date.now(),
-        });
-      }
+    if (tempMode) {
+      // Temporary chat: store the user message in local state only.
+      setTempMessages((prev) => [
+        ...prev,
+        { id: genId(), role: "user", content: text, timestamp: new Date() },
+      ]);
+    } else if (db) {
+      try {
+        if (wasNew) {
+          const chatRef = await addDoc(
+            collection(db, `users/${user.uid}/chats`),
+            {
+              title: text.length > 40 ? text.slice(0, 40) + "…" : text,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            }
+          );
+          chatId = chatRef.id;
+          // Give the new chat a stable, shareable URL. replace() keeps the
+          // current component instance mounted, so streaming state is preserved.
+          router.replace(`/?chat=${chatId}`);
+        } else {
+          updateDoc(doc(db, `users/${user.uid}/chats/${chatId}`), {
+            updatedAt: Date.now(),
+          });
+        }
 
-      await addDoc(
-        collection(db, `users/${user.uid}/chats/${chatId}/messages`),
-        { role: "user", content: text, createdAt: Date.now() }
-      );
-    } catch (err) {
-      console.error("Failed to save message", err);
-      return;
+        await addDoc(
+          collection(db, `users/${user.uid}/chats/${chatId}/messages`),
+          { role: "user", content: text, createdAt: Date.now() }
+        );
+      } catch (err) {
+        console.error("Failed to save message", err);
+        return;
+      }
     }
 
-    if (!chatId) return;
-    setInput("");
+    if (!tempMode && !chatId) return;
 
-    // History for the LLM: prior persisted messages + this new user message
-    const history: ApiMessage[] = wasNew
-      ? []
-      : messages.map((m) => ({ role: m.role, content: m.content }));
+    // History for the LLM: prior messages + this new user message
+    const history: ApiMessage[] = tempMode
+      ? tempMessages.map((m) => ({ role: m.role, content: m.content }))
+      : wasNew
+        ? []
+        : messages.map((m) => ({ role: m.role, content: m.content }));
     history.push({ role: "user", content: text });
 
     setPendingAssistant({
@@ -211,6 +272,35 @@ export default function ChatInterface() {
       timestamp: new Date(),
     });
     setIsLoading(true);
+
+    // Persist the final assistant reply. Temp chats just append to local state;
+    // persisted chats write to Firestore (pre-generating the id so the realtime
+    // listener swaps the transient bubble out without a duplicate flash).
+    const commitAssistant = async (content: string) => {
+      if (tempMode) {
+        // Drop the transient streaming bubble in the same batch we append the
+        // persisted message, so there's no duplicate (no Firestore listener to
+        // do this in temp mode).
+        setPendingAssistant(null);
+        setTempMessages((prev) => [
+          ...prev,
+          { id: genId(), role: "assistant", content, timestamp: new Date() },
+        ]);
+        return;
+      }
+      if (!db) return;
+      const msgCol = collection(
+        db,
+        `users/${user.uid}/chats/${chatId}/messages`
+      );
+      const id = genId();
+      persistedAssistantIdRef.current = id;
+      await setDoc(doc(msgCol, id), {
+        role: "assistant",
+        content,
+        createdAt: Date.now(),
+      });
+    };
 
     try {
       const res = await fetch("/api/chat", {
@@ -235,24 +325,19 @@ export default function ChatInterface() {
       }
       decoder.decode();
 
-      await addDoc(
-        collection(db, `users/${user.uid}/chats/${chatId}/messages`),
-        { role: "assistant", content: full, createdAt: Date.now() }
-      );
+      await commitAssistant(full);
     } catch (err) {
       const errMsg = `⚠️ Sorry, something went wrong: ${
         err instanceof Error ? err.message : String(err)
       }`;
       try {
-        await addDoc(
-          collection(db, `users/${user.uid}/chats/${chatId}/messages`),
-          { role: "assistant", content: errMsg, createdAt: Date.now() }
-        );
+        await commitAssistant(errMsg);
       } catch {
-        /* ignore */
+        // Couldn't persist — just drop the transient bubble.
+        persistedAssistantIdRef.current = null;
+        setPendingAssistant(null);
       }
     } finally {
-      setPendingAssistant(null);
       setIsLoading(false);
       inputRef.current?.focus();
     }
@@ -526,7 +611,11 @@ export default function ChatInterface() {
             </svg>
           </button>
           <span className="font-semibold text-sm sm:text-base truncate flex-1">
-            {activeConversation ? activeConversation.title : "New Chat"}
+            {isTemporaryMode
+              ? "Temporary Chat"
+              : activeConversation
+                ? activeConversation.title
+                : "New Chat"}
           </span>
           <button
             onClick={newChat}
@@ -551,7 +640,7 @@ export default function ChatInterface() {
 
         {/* Messages */}
         <main className="flex-1 overflow-y-auto">
-          {!activeConversation ? (
+          {!activeConversation && !isTemporaryMode ? (
             <div className="flex flex-col items-center justify-center h-full gap-4 px-4">
               <div className="w-12 h-12 rounded-2xl bg-zinc-900 dark:bg-zinc-100 flex items-center justify-center">
                 <svg
@@ -574,9 +663,34 @@ export default function ChatInterface() {
               <p className="text-sm text-zinc-500 dark:text-zinc-400 text-center">
                 Start a conversation by typing a message below.
               </p>
+              <button
+                onClick={startTemporaryChat}
+                className="mt-1 px-4 py-2 rounded-full border border-zinc-300 dark:border-zinc-600 text-sm text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors flex items-center gap-2"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"
+                  />
+                </svg>
+                Start a temporary chat
+              </button>
             </div>
           ) : (
             <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
+              {isTemporaryMode && allMessages.length === 0 && (
+                <p className="text-center text-sm text-zinc-400 dark:text-zinc-500">
+                  This is a temporary chat — nothing will be saved. Messages
+                  disappear when you refresh the page.
+                </p>
+              )}
               {allMessages.map((msg) => (
                 <div
                   key={msg.id}

@@ -36,6 +36,20 @@ type ChatMeta = {
 
 type ApiMessage = { role: "user" | "assistant"; content: string };
 
+// One in-flight LLM request. Requests are always processed one at a time
+// (queue), so their response bubble can be shown directly below the query.
+type InFlightRequest = {
+  id: string;
+  content: string;
+  status: "waiting" | "streaming";
+  tempMode: boolean;
+  chatId: string | null;
+  userMessageId: string | null; // the user message this reply answers
+  userCreatedAt: number; // that query's timestamp — reply sorts just after it
+  userContent: string; // the query text, used when building history at dispatch
+  persistedId?: string | null;
+};
+
 function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
@@ -63,7 +77,6 @@ export default function ChatInterface({
 
   const [chats, setChats] = useState<ChatMeta[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [pendingAssistant, setPendingAssistant] = useState<Message | null>(null);
   // Active chat is driven by the URL (?chat=<id>), so each chat has a stable,
   // shareable route. null = no chat selected (new chat / home).
   const activeId = chatId ?? null;
@@ -71,17 +84,50 @@ export default function ChatInterface({
   // local state only (no id, no Firestore) and are lost on refresh.
   const [isTemporary, setIsTemporary] = useState(false);
   const [tempMessages, setTempMessages] = useState<Message[]>([]);
+  // In-flight LLM requests. Multiple can run in parallel, or wait in a queue.
+  const [inFlight, setInFlight] = useState<InFlightRequest[]>([]);
   const [input, setInput] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
   const [useHistory, setUseHistory] = useState(true);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // id of the assistant message we've persisted; when the realtime listener
-  // reports it, we drop the transient streaming bubble (avoids a flash of the
-  // reply appearing twice before it disappears).
-  const persistedAssistantIdRef = useRef<string | null>(null);
+  // Refs mirror state so async helpers avoid stale closures.
+  const inFlightRef = useRef<InFlightRequest[]>([]);
+  const streamingRef = useRef(false);
+  const messagesRef = useRef<Message[]>([]);
+  const tempMessagesRef = useRef<Message[]>([]);
+  const useHistoryRef = useRef(useHistory);
+
+  const busy = inFlight.length > 0;
+
+  const addInFlight = (entry: InFlightRequest) => {
+    inFlightRef.current = [...inFlightRef.current, entry];
+    setInFlight(inFlightRef.current);
+  };
+  const updateInFlight = (
+    id: string,
+    updater: (r: InFlightRequest) => InFlightRequest
+  ) => {
+    inFlightRef.current = inFlightRef.current.map((r) =>
+      r.id === id ? updater(r) : r
+    );
+    setInFlight(inFlightRef.current);
+  };
+  const removeInFlight = (id: string) => {
+    inFlightRef.current = inFlightRef.current.filter((r) => r.id !== id);
+    setInFlight(inFlightRef.current);
+  };
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  useEffect(() => {
+    tempMessagesRef.current = tempMessages;
+  }, [tempMessages]);
+  useEffect(() => {
+    useHistoryRef.current = useHistory;
+  }, [useHistory]);
 
   // Realtime sidebar: this user's chats
   useEffect(() => {
@@ -126,15 +172,13 @@ export default function ChatInterface({
       });
       setMessages(msgs);
 
-      // Once the persisted assistant reply is visible in the streamed data,
-      // swap the transient streaming bubble for it — no duplicate flash.
-      if (
-        persistedAssistantIdRef.current &&
-        msgs.some((m) => m.id === persistedAssistantIdRef.current)
-      ) {
-        persistedAssistantIdRef.current = null;
-        setPendingAssistant(null);
-      }
+      // Drop any in-flight request whose persisted assistant message has now
+      // arrived in the streamed data (no duplicate flash).
+      const next = inFlightRef.current.filter(
+        (r) => !r.persistedId || !msgs.some((m) => m.id === r.persistedId)
+      );
+      inFlightRef.current = next;
+      setInFlight(next);
     });
     return unsub;
   }, [user, activeId]);
@@ -151,9 +195,35 @@ export default function ChatInterface({
 
   const activeConversation = chats.find((c) => c.id === activeId);
   const isTemporaryMode = isTemporary;
-  const allMessages: Message[] = isTemporaryMode
-    ? [...tempMessages, ...(pendingAssistant ? [pendingAssistant] : [])]
-    : [...messages, ...(pendingAssistant ? [pendingAssistant] : [])];
+
+  // Interleave each in-flight reply directly below its query message.
+  const transientById = new Map(inFlight.map((r) => [r.userMessageId, r]));
+  const source = isTemporaryMode ? tempMessages : messages;
+  const allMessages: Message[] = [];
+  for (const m of source) {
+    allMessages.push(m);
+    const req = transientById.get(m.id);
+    if (req) {
+      allMessages.push({
+        id: req.id,
+        role: "assistant" as const,
+        content: req.content,
+        timestamp: new Date(),
+      });
+    }
+  }
+  // Safety: any reply whose query hasn't arrived in `source` yet goes last.
+  for (const r of inFlight) {
+    if (!allMessages.some((m) => m.id === r.id)) {
+      allMessages.push({
+        id: r.id,
+        role: "assistant" as const,
+        content: r.content,
+        timestamp: new Date(),
+      });
+    }
+  }
+
   const lastMessage = allMessages[allMessages.length - 1];
 
   useEffect(() => {
@@ -224,9 +294,121 @@ export default function ChatInterface({
     }
   }
 
+  // Persist the final assistant reply for one in-flight request. Temp chats
+  // append to local state; persisted chats write to Firestore (pre-generating
+  // the id so the realtime listener swaps the transient bubble out).
+  async function commitAssistant(entry: InFlightRequest, content: string) {
+    if (entry.tempMode) {
+      // Append the message and remove this request in one batch → no duplicate.
+      setTempMessages((prev) => [
+        ...prev,
+        {
+          id: genId(),
+          role: "assistant",
+          content,
+          timestamp: new Date(entry.userCreatedAt + 1),
+        },
+      ]);
+      removeInFlight(entry.id);
+      return;
+    }
+    if (!db || !user || !entry.chatId) {
+      removeInFlight(entry.id);
+      return;
+    }
+    const msgCol = collection(
+      db,
+      `users/${user.uid}/chats/${entry.chatId}/messages`
+    );
+    const id = genId();
+    updateInFlight(entry.id, (r) => ({ ...r, persistedId: id }));
+    // Stamp the reply just after its query so Firestore (ordered by createdAt)
+    // keeps it directly under that query, even if later messages were sent
+    // while this reply was still streaming.
+    await setDoc(doc(msgCol, id), {
+      role: "assistant",
+      content,
+      createdAt: entry.userCreatedAt + 1,
+    });
+    // The entry is removed by the realtime listener once `persistedId` appears.
+  }
+
+  // Build history at dispatch time: all finished messages + every pending
+  // (queued) user message from this request onward, so nothing is lost.
+  function buildHistory(entry: InFlightRequest): ApiMessage[] {
+    const list = inFlightRef.current;
+    const idx = list.findIndex((r) => r.id === entry.id);
+    const pending = (idx === -1 ? list : list.slice(idx)).map((r) => ({
+      role: "user" as const,
+      content: r.userContent,
+    }));
+    if (!useHistoryRef.current) return [{ role: "user", content: entry.userContent }];
+    const finished: ApiMessage[] = entry.tempMode
+      ? tempMessagesRef.current.map((m) => ({
+          role: m.role,
+          content: m.content,
+        }))
+      : messagesRef.current.map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+    return [...finished, ...pending];
+  }
+
+  // Run one request: fetch from /api/chat, stream into the entry, commit.
+  async function runRequest(entry: InFlightRequest) {
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: buildHistory(entry) }),
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || `Request failed (${res.status})`);
+      }
+      if (!res.body) throw new Error("No response stream");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let full = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        full += decoder.decode(value, { stream: true });
+        updateInFlight(entry.id, (r) => ({ ...r, content: full }));
+      }
+      decoder.decode();
+
+      await commitAssistant(entry, full);
+    } catch (err) {
+      const errMsg = `⚠️ Sorry, something went wrong: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+      try {
+        await commitAssistant(entry, errMsg);
+      } catch {
+        removeInFlight(entry.id);
+      }
+    } finally {
+      streamingRef.current = false;
+      processQueue();
+    }
+  }
+
+  // Start the next waiting request once none is streaming (always sequential).
+  async function processQueue() {
+    if (streamingRef.current) return;
+    const next = inFlightRef.current.find((r) => r.status === "waiting");
+    if (!next) return;
+    streamingRef.current = true;
+    updateInFlight(next.id, (r) => ({ ...r, status: "streaming" }));
+    await runRequest(next);
+  }
+
   async function sendMessage() {
     const text = input.trim();
-    if (!text || isLoading || !user) return;
+    if (!text || !user) return;
 
     // Clear the input immediately so it doesn't linger while writes happen.
     setInput("");
@@ -234,12 +416,15 @@ export default function ChatInterface({
     const tempMode = isTemporaryMode;
     const wasNew = !activeId;
     let chatId: string | null = activeId;
+    let userMsgId: string | null = null;
+    const userCreatedAt = Date.now();
 
     if (tempMode) {
       // Temporary chat: store the user message in local state only.
+      userMsgId = genId();
       setTempMessages((prev) => [
         ...prev,
-        { id: genId(), role: "user", content: text, timestamp: new Date() },
+        { id: userMsgId as string, role: "user", content: text, timestamp: new Date(userCreatedAt) },
       ]);
     } else if (db) {
       try {
@@ -263,10 +448,11 @@ export default function ChatInterface({
           });
         }
 
-        await addDoc(
+        const userDoc = await addDoc(
           collection(db, `users/${user.uid}/chats/${chatId}/messages`),
-          { role: "user", content: text, createdAt: Date.now() }
+          { role: "user", content: text, createdAt: userCreatedAt }
         );
+        userMsgId = userDoc.id;
       } catch (err) {
         console.error("Failed to save message", err);
         return;
@@ -275,93 +461,21 @@ export default function ChatInterface({
 
     if (!tempMode && !chatId) return;
 
-    // History for the LLM: when useHistory is on, include prior messages;
-    // otherwise only the current message (less context = faster responses).
-    const history: ApiMessage[] = useHistory
-      ? tempMode
-        ? tempMessages.map((m) => ({ role: m.role, content: m.content }))
-        : wasNew
-          ? []
-          : messages.map((m) => ({ role: m.role, content: m.content }))
-      : [];
-    history.push({ role: "user", content: text });
-
-    setPendingAssistant({
-      id: "pending-" + Date.now(),
-      role: "assistant",
+    // History is NOT snapshot here — it's built at dispatch time in
+    // buildHistory() (after the previous reply completes), so it includes the
+    // finished messages plus all pending queued messages.
+    const entry: InFlightRequest = {
+      id: genId(),
       content: "",
-      timestamp: new Date(),
-    });
-    setIsLoading(true);
-
-    // Persist the final assistant reply. Temp chats just append to local state;
-    // persisted chats write to Firestore (pre-generating the id so the realtime
-    // listener swaps the transient bubble out without a duplicate flash).
-    const commitAssistant = async (content: string) => {
-      if (tempMode) {
-        // Drop the transient streaming bubble in the same batch we append the
-        // persisted message, so there's no duplicate (no Firestore listener to
-        // do this in temp mode).
-        setPendingAssistant(null);
-        setTempMessages((prev) => [
-          ...prev,
-          { id: genId(), role: "assistant", content, timestamp: new Date() },
-        ]);
-        return;
-      }
-      if (!db) return;
-      const msgCol = collection(
-        db,
-        `users/${user.uid}/chats/${chatId}/messages`
-      );
-      const id = genId();
-      persistedAssistantIdRef.current = id;
-      await setDoc(doc(msgCol, id), {
-        role: "assistant",
-        content,
-        createdAt: Date.now(),
-      });
+      status: "waiting",
+      tempMode,
+      chatId,
+      userMessageId: userMsgId,
+      userCreatedAt,
+      userContent: text,
     };
-
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: history }),
-      });
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(errText || `Request failed (${res.status})`);
-      }
-      if (!res.body) throw new Error("No response stream");
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let full = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        full += decoder.decode(value, { stream: true });
-        setPendingAssistant((p) => (p ? { ...p, content: full } : p));
-      }
-      decoder.decode();
-
-      await commitAssistant(full);
-    } catch (err) {
-      const errMsg = `⚠️ Sorry, something went wrong: ${
-        err instanceof Error ? err.message : String(err)
-      }`;
-      try {
-        await commitAssistant(errMsg);
-      } catch {
-        // Couldn't persist — just drop the transient bubble.
-        persistedAssistantIdRef.current = null;
-        setPendingAssistant(null);
-      }
-    } finally {
-      setIsLoading(false);
-      inputRef.current?.focus();
-    }
+    addInFlight(entry);
+    processQueue(); // starts now if idle, otherwise waits its turn
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -758,17 +872,39 @@ export default function ChatInterface({
                           : "bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-bl-sm"
                       }`}
                     >
-                      {msg.role === "assistant" ? (
-                        msg.content === "" && isLoading ? (
-                          <span className="inline-flex gap-1 py-0.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce" />
-                            <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce [animation-delay:120ms]" />
-                            <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce [animation-delay:240ms]" />
-                          </span>
-                        ) : (
-                          <Markdown content={msg.content} />
-                        )
-                      ) : (
+                      {msg.role === "assistant" ? (() => {
+                        const req = inFlight.find((r) => r.id === msg.id);
+                        if (req && req.status === "waiting") {
+                          return (
+                            <span className="inline-flex items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
+                              <svg
+                                className="w-3.5 h-3.5 animate-pulse"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M12 6v6l4 2"
+                                />
+                              </svg>
+                              Queued…
+                            </span>
+                          );
+                        }
+                        if (req && req.content === "") {
+                          return (
+                            <span className="inline-flex gap-1 py-0.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce" />
+                              <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce [animation-delay:120ms]" />
+                              <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce [animation-delay:240ms]" />
+                            </span>
+                          );
+                        }
+                        return <Markdown content={msg.content} />;
+                      })() : (
                         msg.content
                       )}
                     </div>
@@ -844,11 +980,11 @@ export default function ChatInterface({
               />
               <button
                 onClick={sendMessage}
-                disabled={!input.trim() || isLoading}
+                disabled={!input.trim()}
                 className="p-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-700 dark:hover:bg-zinc-300 transition-colors flex-shrink-0"
                 title="Send (Enter)"
               >
-                {isLoading ? (
+                {busy ? (
                   <svg
                     className="w-4 h-4 animate-spin"
                     fill="none"

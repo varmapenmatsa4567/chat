@@ -73,6 +73,7 @@ export default function ChatInterface({
   const [input, setInput] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [useHistory, setUseHistory] = useState(true);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -257,12 +258,15 @@ export default function ChatInterface({
 
     if (!tempMode && !chatId) return;
 
-    // History for the LLM: prior messages + this new user message
-    const history: ApiMessage[] = tempMode
-      ? tempMessages.map((m) => ({ role: m.role, content: m.content }))
-      : wasNew
-        ? []
-        : messages.map((m) => ({ role: m.role, content: m.content }));
+    // History for the LLM: when useHistory is on, include prior messages;
+    // otherwise only the current message (less context = faster responses).
+    const history: ApiMessage[] = useHistory
+      ? tempMode
+        ? tempMessages.map((m) => ({ role: m.role, content: m.content }))
+        : wasNew
+          ? []
+          : messages.map((m) => ({ role: m.role, content: m.content }))
+      : [];
     history.push({ role: "user", content: text });
 
     setPendingAssistant({
@@ -773,8 +777,9 @@ export default function ChatInterface({
         {/* Input */}
         <div className="border-t border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 p-3 sm:p-4">
           <div className="max-w-3xl mx-auto">
-            <div className="flex items-end gap-3 bg-zinc-100 dark:bg-zinc-800 rounded-2xl px-4 py-3 border border-zinc-200 dark:border-zinc-700 focus-within:border-zinc-400 dark:focus-within:border-zinc-500 transition-colors">
-              <textarea
+            <div className="bg-zinc-100 dark:bg-zinc-800 rounded-2xl px-4 py-3 border border-zinc-200 dark:border-zinc-700 focus-within:border-zinc-400 dark:focus-within:border-zinc-500 transition-colors">
+              <div className="flex items-end gap-3">
+                <textarea
                 ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -831,6 +836,33 @@ export default function ChatInterface({
                   </svg>
                 )}
               </button>
+              </div>
+              <div className="flex items-center gap-2 mt-2">
+                <button
+                  onClick={() => setUseHistory((o) => !o)}
+                  title={
+                    useHistory
+                      ? "Include previous messages in each request"
+                      : "Send only the current message (faster, less context)"
+                  }
+                  className="inline-flex items-center gap-2 text-[11px] font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
+                >
+                  <span
+                    className={`relative w-7 h-4 rounded-full transition-colors ${
+                      useHistory
+                        ? "bg-zinc-800 dark:bg-zinc-100"
+                        : "bg-zinc-300 dark:bg-zinc-600"
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white dark:bg-zinc-900 transition-transform ${
+                        useHistory ? "translate-x-3" : ""
+                      }`}
+                    />
+                  </span>
+                  History
+                </button>
+              </div>
             </div>
             <p className="text-center text-[11px] text-zinc-400 dark:text-zinc-500 mt-2 hidden sm:block">
               Press Enter to send · Shift+Enter for new line

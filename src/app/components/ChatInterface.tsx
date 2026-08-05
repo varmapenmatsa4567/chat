@@ -1,6 +1,20 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import {
+  collection,
+  query,
+  orderBy,
+  onSnapshot,
+  addDoc,
+  doc,
+  updateDoc,
+  deleteDoc,
+  getDocs,
+  type Unsubscribe,
+} from "firebase/firestore";
+import { db } from "../../lib/firebase";
+import { useAuth } from "./AuthProvider";
 import Markdown from "./Markdown";
 import { copyText } from "../lib/clipboard";
 
@@ -11,75 +25,13 @@ type Message = {
   timestamp: Date;
 };
 
-type Conversation = {
+type ChatMeta = {
   id: string;
   title: string;
-  messages: Message[];
-  createdAt: Date;
+  createdAt: number;
 };
 
-const SAMPLE_CONVERSATIONS: Conversation[] = [
-  {
-    id: "1",
-    title: "How does React work?",
-    createdAt: new Date(Date.now() - 86400000 * 2),
-    messages: [
-      {
-        id: "m1",
-        role: "user",
-        content: "How does React work?",
-        timestamp: new Date(Date.now() - 86400000 * 2),
-      },
-      {
-        id: "m2",
-        role: "assistant",
-        content:
-          "React is a JavaScript library for building user interfaces. It works by maintaining a virtual DOM — a lightweight copy of the actual DOM. When state changes, React computes the diff between the old and new virtual DOM and updates only the parts of the real DOM that changed. This makes updates fast and efficient.",
-        timestamp: new Date(Date.now() - 86400000 * 2),
-      },
-    ],
-  },
-  {
-    id: "2",
-    title: "Explain async/await in JS",
-    createdAt: new Date(Date.now() - 86400000),
-    messages: [
-      {
-        id: "m3",
-        role: "user",
-        content: "Explain async/await in JS",
-        timestamp: new Date(Date.now() - 86400000),
-      },
-      {
-        id: "m4",
-        role: "assistant",
-        content:
-          "async/await is syntactic sugar over Promises. An `async` function always returns a Promise. Inside it, `await` pauses execution until the awaited Promise resolves, letting you write asynchronous code that reads like synchronous code. Errors can be caught with try/catch blocks.",
-        timestamp: new Date(Date.now() - 86400000),
-      },
-    ],
-  },
-  {
-    id: "3",
-    title: "What is TypeScript?",
-    createdAt: new Date(Date.now() - 3600000),
-    messages: [
-      {
-        id: "m5",
-        role: "user",
-        content: "What is TypeScript?",
-        timestamp: new Date(Date.now() - 3600000),
-      },
-      {
-        id: "m6",
-        role: "assistant",
-        content:
-          "TypeScript is a statically typed superset of JavaScript developed by Microsoft. It adds optional type annotations, interfaces, generics, and other features that help catch errors at compile time rather than runtime. TypeScript compiles down to plain JavaScript.",
-        timestamp: new Date(Date.now() - 3600000),
-      },
-    ],
-  },
-];
+type ApiMessage = { role: "user" | "assistant"; content: string };
 
 function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -94,16 +46,12 @@ function formatDate(date: Date): string {
   return `${days} days ago`;
 }
 
-let nextId = 100;
-function uid() {
-  return String(nextId++);
-}
-
-type ApiMessage = { role: "user" | "assistant"; content: string };
-
 export default function ChatInterface() {
-  const [conversations, setConversations] =
-    useState<Conversation[]>(SAMPLE_CONVERSATIONS);
+  const { user, initializing, configured, signIn, signOut, error } = useAuth();
+
+  const [chats, setChats] = useState<ChatMeta[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [pendingAssistant, setPendingAssistant] = useState<Message | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -111,8 +59,51 @@ export default function ChatInterface() {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const streamTargetIdRef = useRef<string | null>(null);
-  const assistantMsgIdRef = useRef<string | null>(null);
+
+  // Realtime sidebar: this user's chats
+  useEffect(() => {
+    if (!db || !user) {
+      setChats([]);
+      return;
+    }
+    const col = collection(db, `users/${user.uid}/chats`);
+    const q = query(col, orderBy("createdAt", "desc"));
+    const unsub = onSnapshot(q, (snap) => {
+      const list: ChatMeta[] = snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          title: data.title ?? "Untitled",
+          createdAt: data.createdAt ?? 0,
+        };
+      });
+      setChats(list);
+    });
+    return unsub;
+  }, [user]);
+
+  // Realtime messages for the active chat
+  useEffect(() => {
+    if (!db || !user || !activeId) {
+      setMessages([]);
+      return;
+    }
+    const col = collection(db, `users/${user.uid}/chats/${activeId}/messages`);
+    const q = query(col, orderBy("createdAt", "asc"));
+    const unsub: Unsubscribe = onSnapshot(q, (snap) => {
+      const msgs: Message[] = snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          role: data.role,
+          content: data.content ?? "",
+          timestamp: new Date(data.createdAt ?? Date.now()),
+        };
+      });
+      setMessages(msgs);
+    });
+    return unsub;
+  }, [user, activeId]);
 
   async function copyMessage(id: string, content: string) {
     if (await copyText(content)) {
@@ -124,9 +115,12 @@ export default function ChatInterface() {
     }
   }
 
-  const activeConversation = conversations.find((c) => c.id === activeId);
-  const lastMessage =
-    activeConversation?.messages[activeConversation.messages.length - 1];
+  const activeConversation = chats.find((c) => c.id === activeId);
+  const allMessages: Message[] = [
+    ...messages,
+    ...(pendingAssistant ? [pendingAssistant] : []),
+  ];
+  const lastMessage = allMessages[allMessages.length - 1];
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -152,92 +146,78 @@ export default function ChatInterface() {
   function selectConversation(id: string) {
     setActiveId(id);
     setInput("");
-    // Close drawer on mobile after selecting
     if (window.innerWidth < 768) setSidebarOpen(false);
   }
 
-  function deleteConversation(e: React.MouseEvent, id: string) {
+  async function deleteConversation(e: React.MouseEvent, id: string) {
     e.stopPropagation();
-    setConversations((prev) => prev.filter((c) => c.id !== id));
-    if (activeId === id) setActiveId(null);
+    if (!db || !user) return;
+    try {
+      const base = `users/${user.uid}/chats/${id}`;
+      const msgCol = collection(db, `${base}/messages`);
+      const snap = await getDocs(msgCol);
+      await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
+      await deleteDoc(doc(db, base));
+      if (activeId === id) setActiveId(null);
+    } catch (err) {
+      console.error("Failed to delete chat", err);
+    }
   }
 
   async function sendMessage() {
     const text = input.trim();
-    if (!text || isLoading) return;
+    if (!text || isLoading || !db || !user) return;
 
-    const userMsg: Message = {
-      id: uid(),
-      role: "user",
-      content: text,
-      timestamp: new Date(),
-    };
-    const assistantMsg: Message = {
-      id: uid(),
+    const wasNew = !activeId;
+    let chatId: string | null = activeId;
+
+    try {
+      if (wasNew) {
+        const chatRef = await addDoc(collection(db, `users/${user.uid}/chats`), {
+          title: text.length > 40 ? text.slice(0, 40) + "…" : text,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+        chatId = chatRef.id;
+        setActiveId(chatId);
+      } else {
+        updateDoc(doc(db, `users/${user.uid}/chats/${chatId}`), {
+          updatedAt: Date.now(),
+        });
+      }
+
+      await addDoc(
+        collection(db, `users/${user.uid}/chats/${chatId}/messages`),
+        { role: "user", content: text, createdAt: Date.now() }
+      );
+    } catch (err) {
+      console.error("Failed to save message", err);
+      return;
+    }
+
+    if (!chatId) return;
+    setInput("");
+
+    // History for the LLM: prior persisted messages + this new user message
+    const history: ApiMessage[] = wasNew
+      ? []
+      : messages.map((m) => ({ role: m.role, content: m.content }));
+    history.push({ role: "user", content: text });
+
+    setPendingAssistant({
+      id: "pending-" + Date.now(),
       role: "assistant",
       content: "",
       timestamp: new Date(),
-    };
-    assistantMsgIdRef.current = assistantMsg.id;
-
-    // Determine target conversation
-    let convId: string;
-    if (activeId) {
-      convId = activeId;
-      setConversations((prev) =>
-        prev.map((c) =>
-          c.id === activeId
-            ? { ...c, messages: [...c.messages, userMsg, assistantMsg] }
-            : c
-        )
-      );
-    } else {
-      const newConv: Conversation = {
-        id: uid(),
-        title: text.length > 40 ? text.slice(0, 40) + "…" : text,
-        createdAt: new Date(),
-        messages: [userMsg, assistantMsg],
-      };
-      convId = newConv.id;
-      setConversations((prev) => [newConv, ...prev]);
-      setActiveId(newConv.id);
-    }
-    streamTargetIdRef.current = convId;
-
-    setInput("");
+    });
     setIsLoading(true);
-
-    // Build API history: prior messages + the new user message
-    const history = activeConversation ? activeConversation.messages : [];
-    const apiMessages: ApiMessage[] = [...history, userMsg].map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
-
-    const appendToAssistant = (content: string) => {
-      setConversations((prev) =>
-        prev.map((c) =>
-          c.id === streamTargetIdRef.current
-            ? {
-                ...c,
-                messages: c.messages.map((m) =>
-                  m.id === assistantMsgIdRef.current
-                    ? { ...m, content }
-                    : m
-                ),
-              }
-            : c
-        )
-      );
-    };
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: apiMessages }),
+        body: JSON.stringify({ messages: history }),
       });
-
       if (!res.ok) {
         const errText = await res.text();
         throw new Error(errText || `Request failed (${res.status})`);
@@ -251,14 +231,28 @@ export default function ChatInterface() {
         const { done, value } = await reader.read();
         if (done) break;
         full += decoder.decode(value, { stream: true });
-        appendToAssistant(full);
+        setPendingAssistant((p) => (p ? { ...p, content: full } : p));
       }
       decoder.decode();
-    } catch (err) {
-      appendToAssistant(
-        `⚠️ Sorry, something went wrong: ${err instanceof Error ? err.message : String(err)}`
+
+      await addDoc(
+        collection(db, `users/${user.uid}/chats/${chatId}/messages`),
+        { role: "assistant", content: full, createdAt: Date.now() }
       );
+    } catch (err) {
+      const errMsg = `⚠️ Sorry, something went wrong: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+      try {
+        await addDoc(
+          collection(db, `users/${user.uid}/chats/${chatId}/messages`),
+          { role: "assistant", content: errMsg, createdAt: Date.now() }
+        );
+      } catch {
+        /* ignore */
+      }
     } finally {
+      setPendingAssistant(null);
       setIsLoading(false);
       inputRef.current?.focus();
     }
@@ -271,14 +265,94 @@ export default function ChatInterface() {
     }
   }
 
-  // Group conversations by date label
-  const grouped: Record<string, Conversation[]> = {};
-  for (const c of conversations) {
-    const label = formatDate(c.createdAt);
+  // Group chats by date label for the sidebar
+  const grouped: Record<string, ChatMeta[]> = {};
+  for (const c of chats) {
+    const label = formatDate(new Date(c.createdAt));
     if (!grouped[label]) grouped[label] = [];
     grouped[label].push(c);
   }
 
+  // ----- Auth gates -----
+  if (initializing) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-white dark:bg-zinc-900">
+        <div className="w-6 h-6 rounded-full border-2 border-zinc-300 border-t-zinc-900 dark:border-zinc-600 dark:border-t-zinc-100 animate-spin" />
+      </div>
+    );
+  }
+
+  if (!configured) {
+    return (
+      <div className="flex h-screen items-center justify-center px-6 bg-white dark:bg-zinc-900">
+        <div className="max-w-md text-center">
+          <h1 className="text-lg font-semibold mb-2">Firebase not configured</h1>
+          <p className="text-sm text-zinc-500">
+            Add your Firebase web config to <code>.env</code> (see{" "}
+            <code>.env.example</code>) and restart the dev server.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="flex h-screen items-center justify-center px-6 bg-white dark:bg-zinc-900">
+        <div className="w-full max-w-sm text-center">
+          <div className="mx-auto mb-5 w-12 h-12 rounded-2xl bg-zinc-900 dark:bg-zinc-100 flex items-center justify-center">
+            <svg
+              className="w-6 h-6 text-white dark:text-zinc-900"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
+              />
+            </svg>
+          </div>
+          <h1 className="text-2xl font-semibold mb-2">Welcome</h1>
+          <p className="text-sm text-zinc-500 mb-6">
+            Sign in to start chatting. Your conversations are stored securely
+            in your account.
+          </p>
+          <button
+            onClick={signIn}
+            className="w-full flex items-center justify-center gap-3 px-4 py-3 rounded-xl border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors font-medium"
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24">
+              <path
+                fill="#4285F4"
+                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"
+              />
+              <path
+                fill="#34A853"
+                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0012 23z"
+              />
+              <path
+                fill="#FBBC05"
+                d="M5.84 14.1c-.22-.66-.35-1.36-.35-2.1s.13-1.44.35-2.1V7.06H2.18a11 11 0 000 9.88l3.66-2.84z"
+              />
+              <path
+                fill="#EA4335"
+                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1a11 11 0 00-9.82 6.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+              />
+            </svg>
+            Sign in with Google
+          </button>
+          {error && (
+            <p className="mt-4 text-sm text-red-500">{error}</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ----- Main chat UI -----
   return (
     <div className="flex h-screen bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 overflow-hidden">
       {/* Mobile backdrop */}
@@ -392,12 +466,40 @@ export default function ChatInterface() {
             </div>
           ))}
 
-          {conversations.length === 0 && (
+          {chats.length === 0 && (
             <p className="px-3 py-4 text-xs text-zinc-400 dark:text-zinc-500 text-center">
               No conversations yet
             </p>
           )}
         </nav>
+
+        <div className="p-3 border-t border-zinc-200 dark:border-zinc-700 flex items-center gap-2">
+          <div className="w-8 h-8 rounded-full bg-zinc-300 dark:bg-zinc-700 flex-shrink-0 flex items-center justify-center text-sm font-semibold">
+            {(user.displayName ?? user.email ?? "?")[0].toUpperCase()}
+          </div>
+          <span className="text-sm truncate flex-1 text-zinc-700 dark:text-zinc-300">
+            {user.displayName ?? user.email}
+          </span>
+          <button
+            onClick={signOut}
+            title="Sign out"
+            className="p-1.5 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors text-zinc-500 flex-shrink-0"
+          >
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+              />
+            </svg>
+          </button>
+        </div>
       </aside>
 
       {/* Main area */}
@@ -475,7 +577,7 @@ export default function ChatInterface() {
             </div>
           ) : (
             <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
-              {activeConversation.messages.map((msg) => (
+              {allMessages.map((msg) => (
                 <div
                   key={msg.id}
                   className={`flex gap-3 group ${msg.role === "user" ? "justify-end" : "justify-start"}`}
@@ -547,7 +649,6 @@ export default function ChatInterface() {
                       </button>
                     </div>
                   </div>
-
                 </div>
               ))}
               <div ref={messagesEndRef} />

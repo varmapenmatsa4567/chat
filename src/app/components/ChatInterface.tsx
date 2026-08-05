@@ -31,6 +31,7 @@ type ChatMeta = {
   id: string;
   title: string;
   createdAt: number;
+  pinned: boolean;
 };
 
 type ApiMessage = { role: "user" | "assistant"; content: string };
@@ -97,6 +98,7 @@ export default function ChatInterface({
           id: d.id,
           title: data.title ?? "Untitled",
           createdAt: data.createdAt ?? 0,
+          pinned: data.pinned ?? false,
         };
       });
       setChats(list);
@@ -208,6 +210,20 @@ export default function ChatInterface({
     }
   }
 
+  async function togglePin(e: React.MouseEvent, id: string) {
+    e.stopPropagation();
+    if (!db || !user) return;
+    const chat = chats.find((c) => c.id === id);
+    if (!chat) return;
+    try {
+      await updateDoc(doc(db, `users/${user.uid}/chats/${id}`), {
+        pinned: !chat.pinned,
+      });
+    } catch (err) {
+      console.error("Failed to toggle pin", err);
+    }
+  }
+
   async function sendMessage() {
     const text = input.trim();
     if (!text || isLoading || !user) return;
@@ -234,6 +250,7 @@ export default function ChatInterface({
               title: text.length > 40 ? text.slice(0, 40) + "…" : text,
               createdAt: Date.now(),
               updatedAt: Date.now(),
+              pinned: false,
             }
           );
           chatId = chatRef.id;
@@ -354,18 +371,25 @@ export default function ChatInterface({
     }
   }
 
-  // Group chats by date label for the sidebar
+  // Group chats by date label for the sidebar, with pinned chats pinned to top
+  const pinnedChats = chats.filter((c) => c.pinned);
   const grouped: Record<string, ChatMeta[]> = {};
   for (const c of chats) {
+    if (c.pinned) continue;
     const label = formatDate(new Date(c.createdAt));
     if (!grouped[label]) grouped[label] = [];
     grouped[label].push(c);
+  }
+  const sections: { label: string; chats: ChatMeta[] }[] = [];
+  if (pinnedChats.length) sections.push({ label: "Pinned", chats: pinnedChats });
+  for (const [label, convs] of Object.entries(grouped)) {
+    sections.push({ label, chats: convs });
   }
 
   // ----- Auth gates -----
   if (initializing) {
     return (
-      <div className="flex h-screen items-center justify-center bg-white dark:bg-zinc-900">
+      <div className="flex h-screen items-center justify-center bg-white dark:bg-black">
         <div className="w-6 h-6 rounded-full border-2 border-zinc-300 border-t-zinc-900 dark:border-zinc-600 dark:border-t-zinc-100 animate-spin" />
       </div>
     );
@@ -373,7 +397,7 @@ export default function ChatInterface({
 
   if (!configured) {
     return (
-      <div className="flex h-screen items-center justify-center px-6 bg-white dark:bg-zinc-900">
+      <div className="flex h-screen items-center justify-center px-6 bg-white dark:bg-black">
         <div className="max-w-md text-center">
           <h1 className="text-lg font-semibold mb-2">Firebase not configured</h1>
           <p className="text-sm text-zinc-500">
@@ -387,7 +411,7 @@ export default function ChatInterface({
 
   if (!user) {
     return (
-      <div className="flex h-screen items-center justify-center px-6 bg-white dark:bg-zinc-900">
+      <div className="flex h-screen items-center justify-center px-6 bg-white dark:bg-black">
         <div className="w-full max-w-sm text-center">
           <div className="mx-auto mb-5 w-12 h-12 rounded-2xl bg-zinc-900 dark:bg-zinc-100 flex items-center justify-center">
             <svg
@@ -443,7 +467,7 @@ export default function ChatInterface({
 
   // ----- Main chat UI -----
   return (
-    <div className="flex h-screen bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 overflow-hidden">
+    <div className="flex h-screen bg-white dark:bg-black text-zinc-900 dark:text-zinc-100 overflow-hidden">
       {/* Mobile backdrop */}
       {sidebarOpen && (
         <div
@@ -456,7 +480,7 @@ export default function ChatInterface({
       <aside
         className={`
           fixed inset-y-0 left-0 z-30 flex flex-col w-72 overflow-hidden
-          bg-zinc-50 dark:bg-zinc-800
+          bg-zinc-50 dark:bg-zinc-900
           border-r border-zinc-200 dark:border-zinc-700
           transition-all duration-300
           ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}
@@ -511,7 +535,7 @@ export default function ChatInterface({
         </div>
 
         <nav className="flex-1 overflow-y-auto py-2 px-2 space-y-4">
-          {Object.entries(grouped).map(([label, convs]) => (
+          {sections.map(({ label, chats: convs }) => (
             <div key={label}>
               <p className="px-2 py-1 text-xs font-medium text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">
                 {label}
@@ -528,6 +552,30 @@ export default function ChatInterface({
                       }`}
                     >
                       <span className="truncate flex-1">{c.title}</span>
+                      <span
+                        role="button"
+                        onClick={(e) => togglePin(e, c.id)}
+                        className={`ml-1 p-0.5 rounded transition-opacity ${
+                          c.pinned
+                            ? "text-blue-500"
+                            : "text-zinc-500 sm:opacity-0 sm:group-hover:opacity-100 hover:text-blue-500"
+                        }`}
+                        title={c.pinned ? "Unpin" : "Pin"}
+                      >
+                        <svg
+                          className="w-3.5 h-3.5"
+                          fill={c.pinned ? "currentColor" : "none"}
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M12 21s-7-5.5-7-11a7 7 0 1114 0c0 5.5-7 11-7 11z"
+                          />
+                        </svg>
+                      </span>
                       <span
                         role="button"
                         onClick={(e) => deleteConversation(e, c.id)}
@@ -594,7 +642,7 @@ export default function ChatInterface({
       {/* Main area */}
       <div className="flex flex-col flex-1 min-w-0">
         {/* Top bar */}
-        <header className="h-14 flex items-center px-3 gap-2 border-b border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 flex-shrink-0">
+        <header className="h-14 flex items-center px-3 gap-2 border-b border-zinc-200 dark:border-zinc-700 bg-white dark:bg-black flex-shrink-0">
           <button
             onClick={() => setSidebarOpen((o) => !o)}
             title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
@@ -775,7 +823,7 @@ export default function ChatInterface({
         </main>
 
         {/* Input */}
-        <div className="border-t border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 p-3 sm:p-4">
+        <div className="border-t border-zinc-200 dark:border-zinc-700 bg-white dark:bg-black p-3 sm:p-4">
           <div className="max-w-3xl mx-auto">
             <div className="bg-zinc-100 dark:bg-zinc-800 rounded-2xl px-4 py-3 border border-zinc-200 dark:border-zinc-700 focus-within:border-zinc-400 dark:focus-within:border-zinc-500 transition-colors">
               <div className="flex items-end gap-3">
@@ -786,7 +834,7 @@ export default function ChatInterface({
                 onKeyDown={handleKeyDown}
                 placeholder="Message..."
                 rows={1}
-                className="flex-1 bg-transparent resize-none outline-none text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 max-h-40 overflow-y-auto leading-relaxed"
+                className="flex-1 bg-transparent resize-none outline-none text-base text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 max-h-40 overflow-y-auto leading-relaxed"
                 style={{ minHeight: "24px" }}
                 onInput={(e) => {
                   const el = e.currentTarget;
@@ -855,7 +903,7 @@ export default function ChatInterface({
                     }`}
                   >
                     <span
-                      className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white dark:bg-zinc-900 transition-transform ${
+                      className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white dark:bg-black transition-transform ${
                         useHistory ? "translate-x-3" : ""
                       }`}
                     />

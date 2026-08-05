@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import Markdown from "./Markdown";
+import { copyText } from "../lib/clipboard";
 
 type Message = {
   id: string;
@@ -114,15 +115,12 @@ export default function ChatInterface() {
   const assistantMsgIdRef = useRef<string | null>(null);
 
   async function copyMessage(id: string, content: string) {
-    try {
-      await navigator.clipboard.writeText(content);
+    if (await copyText(content)) {
       setCopiedMessageId(id);
       setTimeout(
         () => setCopiedMessageId((c) => (c === id ? null : c)),
         2000
       );
-    } catch {
-      // clipboard unavailable
     }
   }
 
@@ -482,25 +480,13 @@ export default function ChatInterface() {
                   key={msg.id}
                   className={`flex gap-3 group ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                 >
-                  {msg.role === "assistant" && (
-                    <div className="w-8 h-8 rounded-full bg-zinc-900 dark:bg-zinc-100 flex-shrink-0 flex items-center justify-center mt-0.5">
-                      <svg
-                        className="w-4 h-4 text-white dark:text-zinc-900"
-                        fill="currentColor"
-                        viewBox="0 0 20 20"
-                      >
-                        <path d="M10 2a8 8 0 100 16A8 8 0 0010 2zm0 14a6 6 0 110-12 6 6 0 010 12zm-1-7h2v4H9V9zm0-3h2v2H9V6z" />
-                      </svg>
-                    </div>
-                  )}
-
                   <div
-                    className={`flex flex-col gap-1 max-w-[85%] sm:max-w-[80%] ${msg.role === "user" ? "items-end" : "items-start"}`}
+                    className={`flex flex-col gap-1 min-w-0 ${msg.role === "user" ? "items-end" : "items-start"}`}
                   >
                     <div
-                      className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
+                      className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed min-w-0 max-w-full ${
                         msg.role === "user"
-                          ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-br-sm whitespace-pre-wrap"
+                          ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-br-sm whitespace-pre-wrap break-words"
                           : "bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-bl-sm"
                       }`}
                     >
@@ -562,21 +548,6 @@ export default function ChatInterface() {
                     </div>
                   </div>
 
-                  {msg.role === "user" && (
-                    <div className="w-8 h-8 rounded-full bg-zinc-200 dark:bg-zinc-700 flex-shrink-0 flex items-center justify-center mt-0.5">
-                      <svg
-                        className="w-4 h-4 text-zinc-600 dark:text-zinc-400"
-                        fill="currentColor"
-                        viewBox="0 0 20 20"
-                      >
-                        <path
-                          fillRule="evenodd"
-                          d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z"
-                          clipRule="evenodd"
-                        />
-                      </svg>
-                    </div>
-                  )}
                 </div>
               ))}
               <div ref={messagesEndRef} />

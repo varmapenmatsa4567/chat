@@ -27,6 +27,15 @@ body {
 }
 
 /* ChatGPT-style markdown body */
+.markdown-body {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+/* Keep code inside code blocks from wrapping — it should scroll instead */
+.markdown-body pre,
+.markdown-body pre code {
+  overflow-wrap: normal;
+}
 .markdown-body > *:first-child {
   margin-top: 0;
 }

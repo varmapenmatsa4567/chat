@@ -4,6 +4,7 @@ import { useState, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
+import { copyText } from "../lib/clipboard";
 
 type MarkdownProps = {
   content: string;
@@ -38,12 +39,9 @@ function CodeBlock({
 
   async function handleCopy() {
     const text = preRef.current?.textContent ?? "";
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyText(text)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // clipboard unavailable (e.g. insecure context)
     }
   }
 

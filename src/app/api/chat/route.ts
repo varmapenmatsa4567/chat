@@ -20,7 +20,8 @@ export async function POST(request: Request) {
   });
 
   const stream = await client.chat.completions.create({
-    model: "deepseek-v4-flash-free",
+    // model: "mimo-v2.5-free",
+    model: "ling-3.0-flash-free",
     messages,
     stream: true,
   });

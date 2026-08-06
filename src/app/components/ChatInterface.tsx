@@ -18,6 +18,7 @@ import {
 import { db } from "../../lib/firebase";
 import { useAuth } from "./AuthProvider";
 import Markdown from "./Markdown";
+import GptPicker, { DEFAULT_GPT, type CustomGpt } from "./GptPicker";
 import { copyText } from "../lib/clipboard";
 
 type Message = {
@@ -34,7 +35,7 @@ type ChatMeta = {
   pinned: boolean;
 };
 
-type ApiMessage = { role: "user" | "assistant"; content: string };
+type ApiMessage = { role: "system" | "user" | "assistant"; content: string };
 
 // One in-flight LLM request. Requests are always processed one at a time
 // (queue), so their response bubble can be shown directly below the query.
@@ -91,6 +92,13 @@ export default function ChatInterface({
   const [useHistory, setUseHistory] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [gpts, setGpts] = useState<CustomGpt[]>([]);
+  const [activeGptId, setActiveGptId] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("activeGptId") ?? DEFAULT_GPT.id;
+    }
+    return DEFAULT_GPT.id;
+  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
@@ -100,7 +108,9 @@ export default function ChatInterface({
   const messagesRef = useRef<Message[]>([]);
   const tempMessagesRef = useRef<Message[]>([]);
   const useHistoryRef = useRef(useHistory);
+  const activeGptRef = useRef<CustomGpt>(DEFAULT_GPT);
 
+  const activeGpt = gpts.find((g) => g.id === activeGptId) ?? DEFAULT_GPT;
   const busy = inFlight.length > 0;
 
   const addInFlight = (entry: InFlightRequest) => {
@@ -130,6 +140,12 @@ export default function ChatInterface({
   useEffect(() => {
     useHistoryRef.current = useHistory;
   }, [useHistory]);
+  useEffect(() => {
+    activeGptRef.current = activeGpt;
+  }, [activeGpt]);
+  useEffect(() => {
+    localStorage.setItem("activeGptId", activeGptId);
+  }, [activeGptId]);
 
   // Realtime sidebar: this user's chats
   useEffect(() => {
@@ -184,6 +200,28 @@ export default function ChatInterface({
     });
     return unsub;
   }, [user, activeId]);
+
+  // Realtime list of this user's custom GPTs
+  useEffect(() => {
+    if (!db || !user) {
+      setGpts([]);
+      return;
+    }
+    const col = collection(db, `users/${user.uid}/gpts`);
+    const q = query(col, orderBy("createdAt", "asc"));
+    const unsub = onSnapshot(q, (snap) => {
+      const list: CustomGpt[] = snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          name: data.name ?? "Untitled",
+          instructions: data.instructions ?? "",
+        };
+      });
+      setGpts(list);
+    });
+    return unsub;
+  }, [user]);
 
   async function copyMessage(id: string, content: string) {
     if (await copyText(content)) {
@@ -354,16 +392,25 @@ export default function ChatInterface({
     // The entry is removed by the realtime listener once `persistedId` appears.
   }
 
-  // Build history at dispatch time: all finished messages + every pending
-  // (queued) user message from this request onward, so nothing is lost.
+  // Build history at dispatch time: active GPT system instructions, then all
+  // finished messages + every pending (queued) user message from this request
+  // onward, so nothing is lost.
   function buildHistory(entry: InFlightRequest): ApiMessage[] {
+    const result: ApiMessage[] = [];
+    const sys = activeGptRef.current.instructions.trim();
+    if (sys) result.push({ role: "system", content: sys });
+
+    if (!useHistoryRef.current) {
+      result.push({ role: "user", content: entry.userContent });
+      return result;
+    }
+
     const list = inFlightRef.current;
     const idx = list.findIndex((r) => r.id === entry.id);
     const pending = (idx === -1 ? list : list.slice(idx)).map((r) => ({
       role: "user" as const,
       content: r.userContent,
     }));
-    if (!useHistoryRef.current) return [{ role: "user", content: entry.userContent }];
     const finished: ApiMessage[] = entry.tempMode
       ? tempMessagesRef.current.map((m) => ({
           role: m.role,
@@ -373,7 +420,8 @@ export default function ChatInterface({
           role: m.role,
           content: m.content,
         }));
-    return [...finished, ...pending];
+    result.push(...finished, ...pending);
+    return result;
   }
 
   // Run one request: fetch from /api/chat, stream into the entry, commit.
@@ -804,6 +852,14 @@ export default function ChatInterface({
                 ? activeConversation.title
                 : "New Chat"}
           </span>
+
+          <GptPicker
+            user={user}
+            gpts={gpts}
+            activeGptId={activeGptId}
+            onSelect={setActiveGptId}
+          />
+
           <button
             onClick={newChat}
             className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-zinc-500 flex-shrink-0"

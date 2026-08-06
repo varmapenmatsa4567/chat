@@ -20,7 +20,7 @@ export async function POST(request: Request) {
   });
 
   const stream = await client.chat.completions.create({
-    model: "big-pickle",
+    model: "deepseek-v4-flash-free",
     messages,
     stream: true,
   });

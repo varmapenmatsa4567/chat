@@ -109,7 +109,7 @@ function CodeBlock({
 // syntax-highlighted code blocks (theme imported in globals.css).
 export default function Markdown({ content }: MarkdownProps) {
   return (
-    <div className="markdown-body text-sm leading-relaxed">
+    <div className="markdown-body text-base leading-relaxed">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}

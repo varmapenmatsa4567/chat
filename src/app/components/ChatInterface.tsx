@@ -89,9 +89,11 @@ export default function ChatInterface({
   const [input, setInput] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [useHistory, setUseHistory] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const settingsRef = useRef<HTMLDivElement>(null);
   // Refs mirror state so async helpers avoid stale closures.
   const inFlightRef = useRef<InFlightRequest[]>([]);
   const streamingRef = useRef(false);
@@ -239,6 +241,25 @@ export default function ChatInterface({
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
   }, []);
+
+  // Close the settings menu on outside click / Escape
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onClick = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setSettingsOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSettingsOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [settingsOpen]);
 
   function newChat() {
     router.replace("/");
@@ -802,6 +823,71 @@ export default function ChatInterface({
               />
             </svg>
           </button>
+
+          {/* Settings gear + dropdown */}
+          <div ref={settingsRef} className="relative flex-shrink-0">
+            <button
+              onClick={() => setSettingsOpen((o) => !o)}
+              className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-zinc-500"
+              title="Settings"
+              aria-haspopup="true"
+              aria-expanded={settingsOpen}
+            >
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                />
+              </svg>
+            </button>
+
+            {settingsOpen && (
+              <div className="absolute right-0 top-full mt-1 w-64 z-50 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-lg p-2">
+                <div className="flex items-center justify-between px-2 py-1.5">
+                  <span className="text-sm text-zinc-700 dark:text-zinc-300">
+                    Include history
+                  </span>
+                  <button
+                    onClick={() => setUseHistory((o) => !o)}
+                    role="switch"
+                    aria-checked={useHistory}
+                    title={useHistory ? "History on" : "History off"}
+                    className="inline-flex items-center"
+                  >
+                    <span
+                      className={`relative w-9 h-5 rounded-full transition-colors ${
+                        useHistory
+                          ? "bg-zinc-800 dark:bg-zinc-100"
+                          : "bg-zinc-300 dark:bg-zinc-600"
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white dark:bg-black transition-transform ${
+                          useHistory ? "translate-x-4" : ""
+                        }`}
+                      />
+                    </span>
+                  </button>
+                </div>
+                <p className="px-2 pb-1 text-[11px] text-zinc-400 dark:text-zinc-500">
+                  Send prior messages as context.
+                </p>
+              </div>
+            )}
+          </div>
         </header>
 
         {/* Messages */}
@@ -850,7 +936,7 @@ export default function ChatInterface({
               </button>
             </div>
           ) : (
-            <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
+            <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
               {isTemporaryMode && allMessages.length === 0 && (
                 <p className="text-center text-sm text-zinc-400 dark:text-zinc-500">
                   This is a temporary chat — nothing will be saved. Messages
@@ -866,7 +952,7 @@ export default function ChatInterface({
                     className={`flex flex-col gap-1 min-w-0 ${msg.role === "user" ? "items-end" : "items-start"}`}
                   >
                     <div
-                      className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed min-w-0 max-w-full ${
+                      className={`px-4 py-2.5 rounded-2xl text-base leading-relaxed min-w-0 max-w-full ${
                         msg.role === "user"
                           ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-br-sm whitespace-pre-wrap break-words"
                           : "bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-bl-sm"
@@ -960,7 +1046,7 @@ export default function ChatInterface({
 
         {/* Input */}
         <div className="border-t border-zinc-200 dark:border-zinc-700 bg-white dark:bg-black p-3 sm:p-4">
-          <div className="max-w-3xl mx-auto">
+          <div className="max-w-4xl mx-auto">
             <div className="bg-zinc-100 dark:bg-zinc-800 rounded-2xl px-4 py-3 border border-zinc-200 dark:border-zinc-700 focus-within:border-zinc-400 dark:focus-within:border-zinc-500 transition-colors">
               <div className="flex items-end gap-3">
                 <textarea
@@ -1020,32 +1106,6 @@ export default function ChatInterface({
                   </svg>
                 )}
               </button>
-              </div>
-              <div className="flex items-center gap-2 mt-2">
-                <button
-                  onClick={() => setUseHistory((o) => !o)}
-                  title={
-                    useHistory
-                      ? "Include previous messages in each request"
-                      : "Send only the current message (faster, less context)"
-                  }
-                  className="inline-flex items-center gap-2 text-[11px] font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
-                >
-                  <span
-                    className={`relative w-7 h-4 rounded-full transition-colors ${
-                      useHistory
-                        ? "bg-zinc-800 dark:bg-zinc-100"
-                        : "bg-zinc-300 dark:bg-zinc-600"
-                    }`}
-                  >
-                    <span
-                      className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white dark:bg-black transition-transform ${
-                        useHistory ? "translate-x-3" : ""
-                      }`}
-                    />
-                  </span>
-                  History
-                </button>
               </div>
             </div>
             <p className="text-center text-[11px] text-zinc-400 dark:text-zinc-500 mt-2 hidden sm:block">

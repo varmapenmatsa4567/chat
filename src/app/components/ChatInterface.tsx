@@ -18,7 +18,11 @@ import {
 import { db } from "../../lib/firebase";
 import { useAuth } from "./AuthProvider";
 import Markdown from "./Markdown";
-import GptPicker, { DEFAULT_GPT, type CustomGpt } from "./GptPicker";
+import GptPicker, { DEFAULT_GPT } from "./GptPicker";
+import GptManager, { type CustomGpt } from "./GptManager";
+import ProviderPicker from "./ProviderPicker";
+import ProviderManager from "./ProviderManager";
+import type { ProviderConfig } from "../../lib/providers";
 import { copyText } from "../lib/clipboard";
 
 type Message = {
@@ -99,6 +103,22 @@ export default function ChatInterface({
     }
     return DEFAULT_GPT.id;
   });
+  const [providers, setProviders] = useState<ProviderConfig[]>([]);
+  const [activeProviderId, setActiveProviderId] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("activeProviderId");
+    }
+    return null;
+  });
+  const [activeModel, setActiveModel] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("activeProviderModel");
+    }
+    return null;
+  });
+  const [sidebarTab, setSidebarTab] = useState<"chats" | "gpts" | "providers">(
+    "chats"
+  );
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
@@ -109,8 +129,12 @@ export default function ChatInterface({
   const tempMessagesRef = useRef<Message[]>([]);
   const useHistoryRef = useRef(useHistory);
   const activeGptRef = useRef<CustomGpt>(DEFAULT_GPT);
+  const activeProviderRef = useRef<ProviderConfig | null>(null);
+  const activeModelRef = useRef<string | null>(null);
 
   const activeGpt = gpts.find((g) => g.id === activeGptId) ?? DEFAULT_GPT;
+  const activeProvider =
+    providers.find((p) => p.id === activeProviderId) ?? null;
   const busy = inFlight.length > 0;
 
   const addInFlight = (entry: InFlightRequest) => {
@@ -144,8 +168,20 @@ export default function ChatInterface({
     activeGptRef.current = activeGpt;
   }, [activeGpt]);
   useEffect(() => {
+    activeProviderRef.current = activeProvider;
+  }, [activeProvider]);
+  useEffect(() => {
+    activeModelRef.current = activeModel;
+  }, [activeModel]);
+  useEffect(() => {
     localStorage.setItem("activeGptId", activeGptId);
   }, [activeGptId]);
+  useEffect(() => {
+    if (activeProviderId) localStorage.setItem("activeProviderId", activeProviderId);
+    else localStorage.removeItem("activeProviderId");
+    if (activeModel) localStorage.setItem("activeProviderModel", activeModel);
+    else localStorage.removeItem("activeProviderModel");
+  }, [activeProviderId, activeModel]);
 
   // Realtime sidebar: this user's chats
   useEffect(() => {
@@ -219,6 +255,30 @@ export default function ChatInterface({
         };
       });
       setGpts(list);
+    });
+    return unsub;
+  }, [user]);
+
+  // Realtime list of this user's saved providers
+  useEffect(() => {
+    if (!db || !user) {
+      setProviders([]);
+      return;
+    }
+    const col = collection(db, `users/${user.uid}/providers`);
+    const q = query(col, orderBy("createdAt", "asc"));
+    const unsub = onSnapshot(q, (snap) => {
+      const list: ProviderConfig[] = snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          label: data.label ?? "Provider",
+          baseURL: data.baseURL ?? "",
+          apiKey: data.apiKey ?? "",
+          createdAt: data.createdAt ?? 0,
+        };
+      });
+      setProviders(list);
     });
     return unsub;
   }, [user]);
@@ -298,6 +358,11 @@ export default function ChatInterface({
       document.removeEventListener("keydown", onKey);
     };
   }, [settingsOpen]);
+
+  function handleProviderSelect(providerId: string | null, model: string | null) {
+    setActiveProviderId(providerId);
+    setActiveModel(model);
+  }
 
   function newChat() {
     router.replace("/");
@@ -430,7 +495,16 @@ export default function ChatInterface({
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: buildHistory(entry) }),
+        body: JSON.stringify({
+          messages: buildHistory(entry),
+          provider: activeProviderRef.current
+            ? {
+                baseURL: activeProviderRef.current.baseURL,
+                model: activeModelRef.current ?? undefined,
+                apiKey: activeProviderRef.current.apiKey,
+              }
+            : undefined,
+        }),
       });
       if (!res.ok) {
         const errText = await res.text();
@@ -717,6 +791,42 @@ export default function ChatInterface({
           </div>
         </div>
 
+        {/* Sidebar tabs */}
+        <div className="flex border-b border-zinc-200 dark:border-zinc-700">
+          {(["chats", "gpts", "providers"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setSidebarTab(t)}
+              className={`flex-1 py-2 text-xs font-medium transition-colors ${
+                sidebarTab === t
+                  ? "text-zinc-900 dark:text-zinc-100 border-b-2 border-zinc-900 dark:border-zinc-100"
+                  : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 border-b-2 border-transparent"
+              }`}
+            >
+              {t === "chats" ? "Chats" : t === "gpts" ? "GPTs" : "Providers"}
+            </button>
+          ))}
+        </div>
+
+        {sidebarTab === "gpts" ? (
+          <div className="flex-1 overflow-y-auto py-2">
+            <GptManager
+              user={user}
+              gpts={gpts}
+              activeGptId={activeGptId}
+              onSelect={setActiveGptId}
+            />
+          </div>
+        ) : sidebarTab === "providers" ? (
+          <div className="flex-1 overflow-y-auto py-2">
+            <ProviderManager
+              user={user}
+              providers={providers}
+              activeProviderId={activeProviderId}
+              onSelect={setActiveProviderId}
+            />
+          </div>
+        ) : (
         <nav className="flex-1 overflow-y-auto py-2 px-2 space-y-4">
           {sections.map(({ label, chats: convs }) => (
             <div key={label}>
@@ -792,6 +902,7 @@ export default function ChatInterface({
             </p>
           )}
         </nav>
+        )}
 
         <div className="p-3 border-t border-zinc-200 dark:border-zinc-700 flex items-center gap-2">
           <div className="w-8 h-8 rounded-full bg-zinc-300 dark:bg-zinc-700 flex-shrink-0 flex items-center justify-center text-sm font-semibold">
@@ -854,10 +965,17 @@ export default function ChatInterface({
           </span>
 
           <GptPicker
-            user={user}
             gpts={gpts}
             activeGptId={activeGptId}
             onSelect={setActiveGptId}
+          />
+
+          <ProviderPicker
+            user={user}
+            providers={providers}
+            activeProviderId={activeProviderId}
+            activeModel={activeModel}
+            onSelect={handleProviderSelect}
           />
 
           <button

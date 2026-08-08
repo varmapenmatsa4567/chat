@@ -1237,19 +1237,12 @@ export default function ChatInterface({
                 return (
                   <div
                     key={msg.id}
-                    className={`flex gap-2.5 sm:gap-4 group animate-message w-full min-w-0 ${
+                    className={`flex group animate-message w-full min-w-0 ${
                       isUser ? "justify-end" : "justify-start"
                     }`}
                   >
-                    {/* Assistant Avatar */}
-                    {!isUser && (
-                      <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-2xl bg-gradient-to-tr from-indigo-500 to-purple-600 text-white flex items-center justify-center flex-shrink-0 text-xs sm:text-sm shadow-sm mt-0.5">
-                        {activeGpt.icon ?? "✨"}
-                      </div>
-                    )}
-
                     <div
-                      className={`flex flex-col gap-1.5 min-w-0 max-w-[88%] sm:max-w-[80%] ${
+                      className={`flex flex-col gap-1.5 min-w-0 max-w-[92%] sm:max-w-[85%] ${
                         isUser ? "items-end" : "items-start"
                       }`}
                     >
@@ -1349,13 +1342,6 @@ export default function ChatInterface({
                         )}
                       </div>
                     </div>
-
-                    {/* User Avatar */}
-                    {isUser && (
-                      <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-2xl bg-zinc-800 text-white flex items-center justify-center flex-shrink-0 text-xs font-bold shadow-sm mt-0.5">
-                        {(user.displayName ?? user.email ?? "U")[0].toUpperCase()}
-                      </div>
-                    )}
                   </div>
                 );
               })}

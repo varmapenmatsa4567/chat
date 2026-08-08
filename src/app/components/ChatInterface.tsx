@@ -1242,16 +1242,16 @@ export default function ChatInterface({
                     }`}
                   >
                     <div
-                      className={`flex flex-col gap-1.5 min-w-0 max-w-[92%] sm:max-w-[85%] ${
+                      className={`flex flex-col gap-1.5 max-w-full min-w-0 ${
                         isUser ? "items-end" : "items-start"
                       }`}
                     >
-                      {/* Bubble */}
+                      {/* Dynamic Content-Fit Bubble */}
                       <div
-                        className={`px-3.5 sm:px-4 py-2.5 sm:py-3 rounded-3xl text-sm leading-relaxed w-full min-w-0 overflow-hidden ${
+                        className={`px-4 sm:px-5 py-2.5 sm:py-3 rounded-2xl text-sm leading-relaxed w-fit max-w-full min-w-0 overflow-hidden ${
                           isUser
-                            ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-tr-sm shadow-sm whitespace-pre-wrap break-words"
-                            : "glass-card text-zinc-900 dark:text-zinc-100 rounded-tl-sm border border-zinc-200/80 dark:border-zinc-800/80"
+                            ? "bg-zinc-900 dark:bg-zinc-800 text-white dark:text-zinc-100 border border-zinc-800 dark:border-zinc-700/60 shadow-sm whitespace-pre-wrap break-words rounded-tr-sm"
+                            : "glass-card text-zinc-900 dark:text-zinc-100 border border-zinc-200/80 dark:border-zinc-800/80 rounded-tl-sm"
                         }`}
                       >
                         {!isUser ? (
@@ -1293,7 +1293,7 @@ export default function ChatInterface({
                       </div>
 
                       {/* Action & Metadata Bar */}
-                      <div className="flex items-center gap-2.5 px-2 text-[10px] text-zinc-400">
+                      <div className="flex items-center gap-2.5 px-1.5 text-[10px] text-zinc-400">
                         <span>{formatTime(msg.timestamp)}</span>
 
                         {/* Copy button */}

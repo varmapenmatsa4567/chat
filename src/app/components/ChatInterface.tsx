@@ -24,6 +24,7 @@ import ProviderPicker from "./ProviderPicker";
 import ProviderManager from "./ProviderManager";
 import ThemeToggle from "./ThemeToggle";
 import VoiceInput from "./VoiceInput";
+import ImageUploadOCR, { type AttachedImage } from "./ImageUploadOCR";
 import ChatExportModal from "./ChatExportModal";
 import SettingsModal from "./SettingsModal";
 import {
@@ -105,6 +106,9 @@ export default function ChatInterface({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [sidebarTab, setSidebarTab] = useState<"chats" | "gpts" | "providers">("chats");
+
+  // Image Attachment & OCR state
+  const [attachedImage, setAttachedImage] = useState<AttachedImage | null>(null);
 
   // Modals & Settings
   const [exportModalOpen, setExportModalOpen] = useState(false);
@@ -563,8 +567,16 @@ export default function ChatInterface({
   }
 
   async function sendMessage(textToSend?: string) {
-    const text = (textToSend ?? input).trim();
-    if (!text || !user) return;
+    let text = (textToSend ?? input).trim();
+    if (!text && !attachedImage) return;
+    if (!user) return;
+
+    if (attachedImage) {
+      const imgText = attachedImage.extractedText?.trim();
+      const imgHeader = `🖼️ **[Attached Image: ${attachedImage.file.name}]**\n\n📝 **Extracted Text:**\n"""\n${imgText || "(No text detected)"}\n"""`;
+      text = text ? `${imgHeader}\n\n${text}` : `${imgHeader}\n\nPlease analyze, explain, or answer based on the content of this image.`;
+      setAttachedImage(null);
+    }
 
     setInput("");
 
@@ -1354,7 +1366,58 @@ export default function ChatInterface({
         <div className="border-t border-[var(--sidebar-border)] bg-background/90 backdrop-blur-md p-2.5 sm:p-4 z-20 w-full max-w-full">
           <div className="max-w-4xl w-full mx-auto space-y-2">
             <div className="glass-card rounded-2xl p-1.5 sm:p-2.5 shadow-lg border border-zinc-200/90 dark:border-zinc-800/90 focus-within:border-indigo-500/60 dark:focus-within:border-indigo-500/60 transition-all">
+              {/* Attached Image Preview Card */}
+              {attachedImage && (
+                <div className="flex items-center gap-3 p-2 mb-2 rounded-xl bg-zinc-100/90 dark:bg-zinc-800/90 border border-zinc-200/80 dark:border-zinc-700/80 animate-message">
+                  <img
+                    src={attachedImage.previewUrl}
+                    alt="Preview"
+                    className="w-11 h-11 object-cover rounded-lg border border-zinc-300 dark:border-zinc-700 flex-shrink-0"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold truncate text-zinc-900 dark:text-zinc-100">
+                      {attachedImage.file.name}
+                    </p>
+                    {attachedImage.status === "extracting" ? (
+                      <p className="text-[11px] text-indigo-500 flex items-center gap-1.5 font-medium animate-pulse">
+                        <span className="w-2 h-2 rounded-full bg-indigo-500 animate-ping" />
+                        Extracting text ({attachedImage.progress}%)…
+                      </p>
+                    ) : attachedImage.status === "ready" ? (
+                      <p className="text-[11px] text-emerald-500 flex items-center gap-1 font-medium">
+                        <span>✓</span>
+                        <span className="truncate">Text extracted ({attachedImage.extractedText.length} chars)</span>
+                      </p>
+                    ) : attachedImage.status === "error" ? (
+                      <p className="text-[11px] text-rose-500">
+                        {attachedImage.errorMessage || "Failed to extract text"}
+                      </p>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      URL.revokeObjectURL(attachedImage.previewUrl);
+                      setAttachedImage(null);
+                    }}
+                    className="p-1 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors flex-shrink-0"
+                    title="Remove attachment"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+
               <div className="flex items-end gap-1.5 sm:gap-2">
+                {/* Image Upload OCR Button */}
+                <ImageUploadOCR
+                  attachedImage={attachedImage}
+                  onImageChange={setAttachedImage}
+                  disabled={busy}
+                />
+
                 <textarea
                   ref={inputRef}
                   value={input}
@@ -1396,7 +1459,7 @@ export default function ChatInterface({
                 ) : (
                   <button
                     onClick={() => sendMessage()}
-                    disabled={!input.trim()}
+                    disabled={!input.trim() && !attachedImage}
                     className="p-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-30 disabled:cursor-not-allowed transition-all flex items-center justify-center flex-shrink-0 shadow-md shadow-indigo-500/20"
                     title="Send message (Enter)"
                   >

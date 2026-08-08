@@ -135,6 +135,39 @@ export default function SettingsModal({
               </button>
             </div>
 
+            {/* Web Search */}
+            <div className="flex items-center justify-between p-3.5 rounded-2xl bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200/60 dark:border-zinc-800">
+              <div className="space-y-0.5 max-w-[80%]">
+                <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                  Web Search
+                </p>
+                <p className="text-xs text-zinc-500">
+                  Let the AI search the web for current, up-to-date answers when
+                  it decides they're needed.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateSettings((prev) => ({
+                    ...prev,
+                    searchEnabled: !prev.searchEnabled,
+                  }))
+                }
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  settings.searchEnabled
+                    ? "bg-indigo-600"
+                    : "bg-zinc-300 dark:bg-zinc-700"
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                    settings.searchEnabled ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+
             {/* Quick Links */}
             <div className="grid grid-cols-2 gap-2.5 pt-2">
               <button

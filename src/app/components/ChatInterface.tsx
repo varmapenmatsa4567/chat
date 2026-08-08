@@ -40,6 +40,7 @@ import type {
   InFlightRequest,
   CustomGpt,
   AppSettings,
+  SearchSource,
 } from "../types";
 
 // Suggested prompt starter cards for empty state
@@ -129,6 +130,7 @@ export default function ChatInterface({
       useHistory: true,
       soundEnabled: false,
       enterToSend: true,
+      searchEnabled: false,
     };
   });
 
@@ -506,6 +508,7 @@ export default function ChatInterface({
         signal: abortController.signal,
         body: JSON.stringify({
           messages: buildHistory(entry),
+          searchEnabled: settingsRef.current.searchEnabled ?? false,
           provider: activeProviderRef.current
             ? {
                 baseURL: activeProviderRef.current.baseURL,
@@ -525,11 +528,41 @@ export default function ChatInterface({
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let full = "";
+      let buffer = "";
+      let finished = false;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        full += decoder.decode(value, { stream: true });
-        updateInFlight(entry.id, (r) => ({ ...r, content: full }));
+        buffer += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line) continue;
+          let evt: { t?: string; d?: string; s?: string; urls?: SearchSource[] };
+          try {
+            evt = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (evt.t === "content" && typeof evt.d === "string") {
+            full += evt.d;
+            updateInFlight(entry.id, (r) => ({ ...r, content: full }));
+          } else if (evt.t === "status") {
+            updateInFlight(entry.id, (r) => ({ ...r, searching: true }));
+          } else if (evt.t === "sources") {
+            updateInFlight(entry.id, (r) => ({
+              ...r,
+              sources: evt.urls && evt.urls.length ? evt.urls : r.sources,
+            }));
+          } else if (evt.t === "error") {
+            throw new Error(evt.d || "Request failed");
+          } else if (evt.t === "done") {
+            finished = true;
+            break;
+          }
+        }
+        if (finished) break;
       }
       decoder.decode();
 
@@ -1290,6 +1323,29 @@ export default function ChatInterface({
                               </svg>
                               In queue…
                             </span>
+                          ) : req && req.searching ? (
+                            <span className="inline-flex items-center gap-2 text-zinc-400 text-xs">
+                              <svg
+                                className="w-3.5 h-3.5 animate-spin text-indigo-500"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                              >
+                                <circle
+                                  className="opacity-25"
+                                  cx="12"
+                                  cy="12"
+                                  r="10"
+                                  stroke="currentColor"
+                                  strokeWidth="4"
+                                />
+                                <path
+                                  className="opacity-75"
+                                  fill="currentColor"
+                                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                                />
+                              </svg>
+                              🔎 Searching the web…
+                            </span>
                           ) : req && req.content === "" ? (
                             <div className="flex items-center gap-1 py-1">
                               <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" />
@@ -1303,6 +1359,24 @@ export default function ChatInterface({
                           msg.content
                         )}
                       </div>
+
+                      {/* Search sources */}
+                      {req && req.sources && req.sources.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 px-1.5 mt-1.5 max-w-full">
+                          {req.sources.slice(0, 3).map((s, i) => (
+                            <a
+                              key={i}
+                              href={s.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={s.url}
+                              className="text-[11px] px-2 py-1 rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20 hover:border-indigo-500/40 transition-colors max-w-[220px] truncate"
+                            >
+                              {i + 1}. {s.title}
+                            </a>
+                          ))}
+                        </div>
+                      )}
 
                       {/* Action & Metadata Bar */}
                       <div className="flex items-center gap-2.5 px-1.5 text-[10px] text-zinc-400">

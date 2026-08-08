@@ -20,6 +20,8 @@ export type ApiMessage = {
   content: string;
 };
 
+export type SearchSource = { title: string; url: string };
+
 export type InFlightRequest = {
   id: string;
   content: string;
@@ -31,6 +33,9 @@ export type InFlightRequest = {
   userContent: string;
   persistedId?: string | null;
   abortController?: AbortController;
+  // Web-search status for the transient bubble.
+  searching?: boolean;
+  sources?: SearchSource[];
 };
 
 export type CustomGpt = {
@@ -47,4 +52,6 @@ export type AppSettings = {
   soundEnabled: boolean;
   enterToSend: boolean;
   systemPrompt?: string;
+  // When enabled, the AI may search the web for up-to-date answers.
+  searchEnabled?: boolean;
 };

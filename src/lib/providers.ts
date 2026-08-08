@@ -52,16 +52,10 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     defaultModel: "grok-2-latest",
   },
   {
-    key: "together",
-    name: "Together AI",
-    baseURL: "https://api.together.xyz/v1",
-    defaultModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-  },
-  {
-    key: "fireworks",
-    name: "Fireworks AI",
-    baseURL: "https://api.fireworks.ai/inference/v1",
-    defaultModel: "accounts/fireworks/models/llama-v3p1-70b-instruct",
+    key: "opencode-zen",
+    name: "Opencode Zen",
+    baseURL: "https://opencode.ai/zen/v1",
+    defaultModel: "mimo-v2.5-free",
   },
 ];
 

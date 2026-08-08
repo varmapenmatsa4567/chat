@@ -52,7 +52,7 @@ export async function POST(request: Request) {
               "Provider request failed.");
     return new Response(message, { status });
   }
-
+  
   const encoder = new TextEncoder();
   const readable = new ReadableStream({
     async start(controller) {

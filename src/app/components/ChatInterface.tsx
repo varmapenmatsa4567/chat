@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   collection,
@@ -18,42 +18,52 @@ import {
 import { db } from "../../lib/firebase";
 import { useAuth } from "./AuthProvider";
 import Markdown from "./Markdown";
-import GptPicker, { DEFAULT_GPT } from "./GptPicker";
-import GptManager, { type CustomGpt } from "./GptManager";
+import GptPicker, { PRESET_GPTS, DEFAULT_GPT } from "./GptPicker";
+import GptManager from "./GptManager";
 import ProviderPicker from "./ProviderPicker";
 import ProviderManager from "./ProviderManager";
-import type { ProviderConfig } from "../../lib/providers";
+import ThemeToggle from "./ThemeToggle";
+import VoiceInput from "./VoiceInput";
+import ChatExportModal from "./ChatExportModal";
+import SettingsModal from "./SettingsModal";
+import {
+  getProviderIcon,
+  providerDisplayName,
+  type ProviderConfig,
+} from "../../lib/providers";
 import { copyText } from "../lib/clipboard";
+import type {
+  Message,
+  ChatMeta,
+  ApiMessage,
+  InFlightRequest,
+  CustomGpt,
+  AppSettings,
+} from "../types";
 
-type Message = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  timestamp: Date;
-};
-
-type ChatMeta = {
-  id: string;
-  title: string;
-  createdAt: number;
-  pinned: boolean;
-};
-
-type ApiMessage = { role: "system" | "user" | "assistant"; content: string };
-
-// One in-flight LLM request. Requests are always processed one at a time
-// (queue), so their response bubble can be shown directly below the query.
-type InFlightRequest = {
-  id: string;
-  content: string;
-  status: "waiting" | "streaming";
-  tempMode: boolean;
-  chatId: string | null;
-  userMessageId: string | null; // the user message this reply answers
-  userCreatedAt: number; // that query's timestamp — reply sorts just after it
-  userContent: string; // the query text, used when building history at dispatch
-  persistedId?: string | null;
-};
+// Suggested prompt starter cards for empty state
+const STARTER_PROMPTS = [
+  {
+    category: "💻 Code",
+    title: "Build a modern API route",
+    prompt: "Write a complete Next.js 15 App Router API route with rate-limiting, error handling, and TypeScript types.",
+  },
+  {
+    category: "✍️ Writing",
+    title: "Write an engaging launch announcement",
+    prompt: "Write a high-converting Product Hunt launch post for our new AI-powered developer tool.",
+  },
+  {
+    category: "🧠 Brainstorm",
+    title: "SaaS growth strategies",
+    prompt: "Brainstorm 5 creative growth hacking experiments for an early-stage B2B SaaS startup.",
+  },
+  {
+    category: "🔬 Analyze",
+    title: "Explain quantum computing simply",
+    prompt: "Explain quantum computing and qubit superposition using intuitive analogies for a non-technical audience.",
+  },
+];
 
 function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -65,7 +75,8 @@ function formatDate(date: Date): string {
   const days = Math.floor(diff / 86400000);
   if (days === 0) return "Today";
   if (days === 1) return "Yesterday";
-  return `${days} days ago`;
+  if (days < 7) return `${days} days ago`;
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 function genId(): string {
@@ -82,20 +93,42 @@ export default function ChatInterface({
 
   const [chats, setChats] = useState<ChatMeta[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
-  // Active chat is driven by the URL (?chat=<id>), so each chat has a stable,
-  // shareable route. null = no chat selected (new chat / home).
   const activeId = chatId ?? null;
-  // Temporary chat: only startable from the fresh state. Conversations live in
-  // local state only (no id, no Firestore) and are lost on refresh.
+
+  // Temporary chat state
   const [isTemporary, setIsTemporary] = useState(false);
   const [tempMessages, setTempMessages] = useState<Message[]>([]);
-  // In-flight LLM requests. Multiple can run in parallel, or wait in a queue.
+
+  // In-flight streaming requests
   const [inFlight, setInFlight] = useState<InFlightRequest[]>([]);
   const [input, setInput] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [useHistory, setUseHistory] = useState(true);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sidebarTab, setSidebarTab] = useState<"chats" | "gpts" | "providers">("chats");
+
+  // Modals & Settings
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+
+  // Settings
+  const [settings, setSettings] = useState<AppSettings>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("chat_settings");
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch {}
+      }
+    }
+    return {
+      useHistory: true,
+      soundEnabled: false,
+      enterToSend: true,
+    };
+  });
+
+  // Providers & GPTs
   const [gpts, setGpts] = useState<CustomGpt[]>([]);
   const [activeGptId, setActiveGptId] = useState<string>(() => {
     if (typeof window !== "undefined") {
@@ -103,6 +136,7 @@ export default function ChatInterface({
     }
     return DEFAULT_GPT.id;
   });
+
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [activeProviderId, setActiveProviderId] = useState<string | null>(() => {
     if (typeof window !== "undefined") {
@@ -116,25 +150,26 @@ export default function ChatInterface({
     }
     return null;
   });
-  const [sidebarTab, setSidebarTab] = useState<"chats" | "gpts" | "providers">(
-    "chats"
-  );
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const settingsRef = useRef<HTMLDivElement>(null);
-  // Refs mirror state so async helpers avoid stale closures.
+
+  // Active abort controllers map
+  const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
+
+  // Refs for async processing
   const inFlightRef = useRef<InFlightRequest[]>([]);
   const streamingRef = useRef(false);
   const messagesRef = useRef<Message[]>([]);
   const tempMessagesRef = useRef<Message[]>([]);
-  const useHistoryRef = useRef(useHistory);
+  const settingsRef = useRef<AppSettings>(settings);
   const activeGptRef = useRef<CustomGpt>(DEFAULT_GPT);
   const activeProviderRef = useRef<ProviderConfig | null>(null);
   const activeModelRef = useRef<string | null>(null);
 
-  const activeGpt = gpts.find((g) => g.id === activeGptId) ?? DEFAULT_GPT;
-  const activeProvider =
-    providers.find((p) => p.id === activeProviderId) ?? null;
+  const allAvailableGpts = useMemo(() => [...PRESET_GPTS, ...gpts], [gpts]);
+  const activeGpt = allAvailableGpts.find((g) => g.id === activeGptId) ?? DEFAULT_GPT;
+  const activeProvider = providers.find((p) => p.id === activeProviderId) ?? null;
   const busy = inFlight.length > 0;
 
   const addInFlight = (entry: InFlightRequest) => {
@@ -162,8 +197,9 @@ export default function ChatInterface({
     tempMessagesRef.current = tempMessages;
   }, [tempMessages]);
   useEffect(() => {
-    useHistoryRef.current = useHistory;
-  }, [useHistory]);
+    settingsRef.current = settings;
+    localStorage.setItem("chat_settings", JSON.stringify(settings));
+  }, [settings]);
   useEffect(() => {
     activeGptRef.current = activeGpt;
   }, [activeGpt]);
@@ -183,7 +219,7 @@ export default function ChatInterface({
     else localStorage.removeItem("activeProviderModel");
   }, [activeProviderId, activeModel]);
 
-  // Realtime sidebar: this user's chats
+  // Realtime Chats Subscription
   useEffect(() => {
     if (!db || !user) {
       setChats([]);
@@ -196,7 +232,7 @@ export default function ChatInterface({
         const data = d.data();
         return {
           id: d.id,
-          title: data.title ?? "Untitled",
+          title: data.title ?? "Untitled Conversation",
           createdAt: data.createdAt ?? 0,
           pinned: data.pinned ?? false,
         };
@@ -206,7 +242,7 @@ export default function ChatInterface({
     return unsub;
   }, [user]);
 
-  // Realtime messages for the active chat
+  // Realtime Messages Subscription
   useEffect(() => {
     if (!db || !user || !activeId) {
       setMessages([]);
@@ -226,8 +262,7 @@ export default function ChatInterface({
       });
       setMessages(msgs);
 
-      // Drop any in-flight request whose persisted assistant message has now
-      // arrived in the streamed data (no duplicate flash).
+      // Clean in-flight matching
       const next = inFlightRef.current.filter(
         (r) => !r.persistedId || !msgs.some((m) => m.id === r.persistedId)
       );
@@ -237,7 +272,7 @@ export default function ChatInterface({
     return unsub;
   }, [user, activeId]);
 
-  // Realtime list of this user's custom GPTs
+  // Realtime Custom GPTs
   useEffect(() => {
     if (!db || !user) {
       setGpts([]);
@@ -250,8 +285,10 @@ export default function ChatInterface({
         const data = d.data();
         return {
           id: d.id,
-          name: data.name ?? "Untitled",
+          name: data.name ?? "Untitled GPT",
           instructions: data.instructions ?? "",
+          description: data.description ?? "",
+          icon: data.icon ?? "🤖",
         };
       });
       setGpts(list);
@@ -259,7 +296,7 @@ export default function ChatInterface({
     return unsub;
   }, [user]);
 
-  // Realtime list of this user's saved providers
+  // Realtime Providers
   useEffect(() => {
     if (!db || !user) {
       setProviders([]);
@@ -283,6 +320,7 @@ export default function ChatInterface({
     return unsub;
   }, [user]);
 
+  // Copy Message Handler
   async function copyMessage(id: string, content: string) {
     if (await copyText(content)) {
       setCopiedMessageId(id);
@@ -293,10 +331,11 @@ export default function ChatInterface({
     }
   }
 
-  const activeConversation = chats.find((c) => c.id === activeId);
+  // Active chat meta
+  const activeConversation = chats.find((c) => c.id === activeId) ?? null;
   const isTemporaryMode = isTemporary;
 
-  // Interleave each in-flight reply directly below its query message.
+  // Interleave in-flight responses
   const transientById = new Map(inFlight.map((r) => [r.userMessageId, r]));
   const source = isTemporaryMode ? tempMessages : messages;
   const allMessages: Message[] = [];
@@ -312,7 +351,6 @@ export default function ChatInterface({
       });
     }
   }
-  // Safety: any reply whose query hasn't arrived in `source` yet goes last.
   for (const r of inFlight) {
     if (!allMessages.some((m) => m.id === r.id)) {
       allMessages.push({
@@ -328,48 +366,14 @@ export default function ChatInterface({
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [lastMessage?.content]);
-
-  // Close sidebar on small screens when screen resizes up
-  useEffect(() => {
-    const mq = window.matchMedia("(min-width: 768px)");
-    const handler = (e: MediaQueryListEvent) => {
-      if (!e.matches) setSidebarOpen(false);
-    };
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
-
-  // Close the settings menu on outside click / Escape
-  useEffect(() => {
-    if (!settingsOpen) return;
-    const onClick = (e: MouseEvent) => {
-      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
-        setSettingsOpen(false);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setSettingsOpen(false);
-    };
-    document.addEventListener("mousedown", onClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [settingsOpen]);
-
-  function handleProviderSelect(providerId: string | null, model: string | null) {
-    setActiveProviderId(providerId);
-    setActiveModel(model);
-  }
+  }, [lastMessage?.content, inFlight.length]);
 
   function newChat() {
     router.replace("/");
     setIsTemporary(false);
     setTempMessages([]);
     setInput("");
-    setSidebarOpen(false);
+    if (window.innerWidth < 768) setSidebarOpen(false);
     inputRef.current?.focus();
   }
 
@@ -377,7 +381,7 @@ export default function ChatInterface({
     setIsTemporary(true);
     setTempMessages([]);
     setInput("");
-    setSidebarOpen(false);
+    if (window.innerWidth < 768) setSidebarOpen(false);
     inputRef.current?.focus();
   }
 
@@ -418,12 +422,17 @@ export default function ChatInterface({
     }
   }
 
-  // Persist the final assistant reply for one in-flight request. Temp chats
-  // append to local state; persisted chats write to Firestore (pre-generating
-  // the id so the realtime listener swaps the transient bubble out).
+  // Stop Generation / Abort Stream
+  function stopGeneration(id: string) {
+    const controller = abortControllersRef.current.get(id);
+    if (controller) {
+      controller.abort();
+      abortControllersRef.current.delete(id);
+    }
+  }
+
   async function commitAssistant(entry: InFlightRequest, content: string) {
     if (entry.tempMode) {
-      // Append the message and remove this request in one batch → no duplicate.
       setTempMessages((prev) => [
         ...prev,
         {
@@ -446,26 +455,19 @@ export default function ChatInterface({
     );
     const id = genId();
     updateInFlight(entry.id, (r) => ({ ...r, persistedId: id }));
-    // Stamp the reply just after its query so Firestore (ordered by createdAt)
-    // keeps it directly under that query, even if later messages were sent
-    // while this reply was still streaming.
     await setDoc(doc(msgCol, id), {
       role: "assistant",
       content,
       createdAt: entry.userCreatedAt + 1,
     });
-    // The entry is removed by the realtime listener once `persistedId` appears.
   }
 
-  // Build history at dispatch time: active GPT system instructions, then all
-  // finished messages + every pending (queued) user message from this request
-  // onward, so nothing is lost.
   function buildHistory(entry: InFlightRequest): ApiMessage[] {
     const result: ApiMessage[] = [];
-    const sys = activeGptRef.current.instructions.trim();
+    const sys = activeGptRef.current.instructions?.trim();
     if (sys) result.push({ role: "system", content: sys });
 
-    if (!useHistoryRef.current) {
+    if (!settingsRef.current.useHistory) {
       result.push({ role: "user", content: entry.userContent });
       return result;
     }
@@ -489,12 +491,15 @@ export default function ChatInterface({
     return result;
   }
 
-  // Run one request: fetch from /api/chat, stream into the entry, commit.
   async function runRequest(entry: InFlightRequest) {
+    const abortController = new AbortController();
+    abortControllersRef.current.set(entry.id, abortController);
+
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: abortController.signal,
         body: JSON.stringify({
           messages: buildHistory(entry),
           provider: activeProviderRef.current
@@ -506,6 +511,7 @@ export default function ChatInterface({
             : undefined,
         }),
       });
+
       if (!res.ok) {
         const errText = await res.text();
         throw new Error(errText || `Request failed (${res.status})`);
@@ -524,22 +530,29 @@ export default function ChatInterface({
       decoder.decode();
 
       await commitAssistant(entry, full);
-    } catch (err) {
-      const errMsg = `⚠️ Sorry, something went wrong: ${
-        err instanceof Error ? err.message : String(err)
-      }`;
-      try {
-        await commitAssistant(entry, errMsg);
-      } catch {
-        removeInFlight(entry.id);
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        const currentContent =
+          inFlightRef.current.find((r) => r.id === entry.id)?.content ||
+          "*(Generation stopped by user)*";
+        await commitAssistant(entry, currentContent);
+      } else {
+        const errMsg = `⚠️ Request error: ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+        try {
+          await commitAssistant(entry, errMsg);
+        } catch {
+          removeInFlight(entry.id);
+        }
       }
     } finally {
+      abortControllersRef.current.delete(entry.id);
       streamingRef.current = false;
       processQueue();
     }
   }
 
-  // Start the next waiting request once none is streaming (always sequential).
   async function processQueue() {
     if (streamingRef.current) return;
     const next = inFlightRef.current.find((r) => r.status === "waiting");
@@ -549,11 +562,10 @@ export default function ChatInterface({
     await runRequest(next);
   }
 
-  async function sendMessage() {
-    const text = input.trim();
+  async function sendMessage(textToSend?: string) {
+    const text = (textToSend ?? input).trim();
     if (!text || !user) return;
 
-    // Clear the input immediately so it doesn't linger while writes happen.
     setInput("");
 
     const tempMode = isTemporaryMode;
@@ -563,11 +575,15 @@ export default function ChatInterface({
     const userCreatedAt = Date.now();
 
     if (tempMode) {
-      // Temporary chat: store the user message in local state only.
       userMsgId = genId();
       setTempMessages((prev) => [
         ...prev,
-        { id: userMsgId as string, role: "user", content: text, timestamp: new Date(userCreatedAt) },
+        {
+          id: userMsgId as string,
+          role: "user",
+          content: text,
+          timestamp: new Date(userCreatedAt),
+        },
       ]);
     } else if (db) {
       try {
@@ -575,15 +591,13 @@ export default function ChatInterface({
           const chatRef = await addDoc(
             collection(db, `users/${user.uid}/chats`),
             {
-              title: text.length > 40 ? text.slice(0, 40) + "…" : text,
+              title: text.length > 36 ? text.slice(0, 36) + "…" : text,
               createdAt: Date.now(),
               updatedAt: Date.now(),
               pinned: false,
             }
           );
           chatId = chatRef.id;
-          // Give the new chat a stable, shareable URL. replace() keeps the
-          // current component instance mounted, so streaming state is preserved.
           router.replace(`/?chat=${chatId}`);
         } else {
           updateDoc(doc(db, `users/${user.uid}/chats/${chatId}`), {
@@ -604,9 +618,6 @@ export default function ChatInterface({
 
     if (!tempMode && !chatId) return;
 
-    // History is NOT snapshot here — it's built at dispatch time in
-    // buildHistory() (after the previous reply completes), so it includes the
-    // finished messages plus all pending queued messages.
     const entry: InFlightRequest = {
       id: genId(),
       content: "",
@@ -618,143 +629,203 @@ export default function ChatInterface({
       userContent: text,
     };
     addInFlight(entry);
-    processQueue(); // starts now if idle, otherwise waits its turn
+    processQueue();
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && settings.enterToSend) {
       e.preventDefault();
       sendMessage();
     }
   }
 
-  // Group chats by date label for the sidebar, with pinned chats pinned to top
-  const pinnedChats = chats.filter((c) => c.pinned);
+  // Regenerate last assistant response
+  const regenerateLastResponse = () => {
+    if (allMessages.length === 0) return;
+    const lastUserMsg = [...allMessages].reverse().find((m) => m.role === "user");
+    if (lastUserMsg) {
+      sendMessage(lastUserMsg.content);
+    }
+  };
+
+  // Filter chats by search query
+  const filteredChats = useMemo(() => {
+    if (!searchQuery.trim()) return chats;
+    return chats.filter((c) =>
+      c.title.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [chats, searchQuery]);
+
+  const pinnedChats = filteredChats.filter((c) => c.pinned);
+  const regularChats = filteredChats.filter((c) => !c.pinned);
+
   const grouped: Record<string, ChatMeta[]> = {};
-  for (const c of chats) {
-    if (c.pinned) continue;
+  for (const c of regularChats) {
     const label = formatDate(new Date(c.createdAt));
     if (!grouped[label]) grouped[label] = [];
     grouped[label].push(c);
   }
+
   const sections: { label: string; chats: ChatMeta[] }[] = [];
-  if (pinnedChats.length) sections.push({ label: "Pinned", chats: pinnedChats });
+  if (pinnedChats.length > 0) {
+    sections.push({ label: "📌 Pinned", chats: pinnedChats });
+  }
   for (const [label, convs] of Object.entries(grouped)) {
     sections.push({ label, chats: convs });
   }
 
-  // ----- Auth gates -----
+  // Auth Loading Gate
   if (initializing) {
     return (
-      <div className="flex h-screen items-center justify-center bg-white dark:bg-black">
-        <div className="w-6 h-6 rounded-full border-2 border-zinc-300 border-t-zinc-900 dark:border-zinc-600 dark:border-t-zinc-100 animate-spin" />
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 rounded-full border-2 border-indigo-500/20 border-t-indigo-500 animate-spin" />
+          <p className="text-xs text-zinc-500 font-medium tracking-wide">Loading workspace…</p>
+        </div>
       </div>
     );
   }
 
+  // Unconfigured Gate
   if (!configured) {
     return (
-      <div className="flex h-screen items-center justify-center px-6 bg-white dark:bg-black">
-        <div className="max-w-md text-center">
-          <h1 className="text-lg font-semibold mb-2">Firebase not configured</h1>
-          <p className="text-sm text-zinc-500">
-            Add your Firebase web config to <code>.env</code> (see{" "}
-            <code>.env.example</code>) and restart the dev server.
+      <div className="flex h-screen items-center justify-center px-6 bg-background">
+        <div className="max-w-md text-center p-8 rounded-3xl glass-card space-y-4">
+          <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center justify-center mx-auto text-2xl">
+            ⚠️
+          </div>
+          <h1 className="text-lg font-semibold">Firebase Configuration Missing</h1>
+          <p className="text-sm text-zinc-500 leading-relaxed">
+            Please add your Firebase web credentials to your <code>.env</code> file and restart the development server.
           </p>
         </div>
       </div>
     );
   }
 
+  // Unauthenticated Welcome Hero
   if (!user) {
     return (
-      <div className="flex h-screen items-center justify-center px-6 bg-white dark:bg-black">
-        <div className="w-full max-w-sm text-center">
-          <div className="mx-auto mb-5 w-12 h-12 rounded-2xl bg-zinc-900 dark:bg-zinc-100 flex items-center justify-center">
-            <svg
-              className="w-6 h-6 text-white dark:text-zinc-900"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
-              />
-            </svg>
+      <div className="flex h-screen items-center justify-center px-4 bg-background bg-radial-mesh relative overflow-hidden">
+        <div className="w-full max-w-md text-center p-8 sm:p-10 rounded-3xl glass-card shadow-2xl border border-zinc-200/80 dark:border-zinc-800/80 space-y-6 relative z-10 animate-message">
+          <div className="w-16 h-16 rounded-3xl bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center mx-auto shadow-lg shadow-indigo-500/25">
+            <span className="text-3xl">✨</span>
           </div>
-          <h1 className="text-2xl font-semibold mb-2">Welcome</h1>
-          <p className="text-sm text-zinc-500 mb-6">
-            Sign in to start chatting. Your conversations are stored securely
-            in your account.
-          </p>
-          <button
-            onClick={signIn}
-            className="w-full flex items-center justify-center gap-3 px-4 py-3 rounded-xl border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors font-medium"
-          >
-            <svg className="w-5 h-5" viewBox="0 0 24 24">
-              <path
-                fill="#4285F4"
-                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"
-              />
-              <path
-                fill="#34A853"
-                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0012 23z"
-              />
-              <path
-                fill="#FBBC05"
-                d="M5.84 14.1c-.22-.66-.35-1.36-.35-2.1s.13-1.44.35-2.1V7.06H2.18a11 11 0 000 9.88l3.66-2.84z"
-              />
-              <path
-                fill="#EA4335"
-                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1a11 11 0 00-9.82 6.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-              />
-            </svg>
-            Sign in with Google
-          </button>
-          {error && (
-            <p className="mt-4 text-sm text-red-500">{error}</p>
-          )}
+
+          <div className="space-y-2">
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
+              Welcome to <span className="gradient-text">AI Studio</span>
+            </h1>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400 leading-relaxed">
+              Your high-speed intelligent workspace. Bring your own models, craft custom personas, and chat in realtime.
+            </p>
+          </div>
+
+          <div className="space-y-3 pt-2">
+            <button
+              onClick={signIn}
+              className="w-full flex items-center justify-center gap-3 px-5 py-3.5 rounded-2xl bg-white dark:bg-zinc-800/90 border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-all font-medium text-sm text-zinc-900 dark:text-zinc-100 shadow-sm hover:shadow group"
+            >
+              <svg className="w-5 h-5 flex-shrink-0" viewBox="0 0 24 24">
+                <path
+                  fill="#4285F4"
+                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"
+                />
+                <path
+                  fill="#34A853"
+                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0012 23z"
+                />
+                <path
+                  fill="#FBBC05"
+                  d="M5.84 14.1c-.22-.66-.35-1.36-.35-2.1s.13-1.44.35-2.1V7.06H2.18a11 11 0 000 9.88l3.66-2.84z"
+                />
+                <path
+                  fill="#EA4335"
+                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1a11 11 0 00-9.82 6.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                />
+              </svg>
+              <span>Continue with Google</span>
+            </button>
+
+            {error && (
+              <p className="text-xs text-rose-500 bg-rose-500/10 p-2.5 rounded-xl">{error}</p>
+            )}
+          </div>
+
+          <div className="pt-2 text-[11px] text-zinc-400 flex items-center justify-center gap-4">
+            <span>🔒 Encrypted Storage</span>
+            <span>•</span>
+            <span>⚡ Ultra Fast</span>
+            <span>•</span>
+            <span>🎨 BYO Models</span>
+          </div>
         </div>
       </div>
     );
   }
 
-  // ----- Main chat UI -----
+  // Main UI Workspace
   return (
-    <div className="flex h-screen bg-white dark:bg-black text-zinc-900 dark:text-zinc-100 overflow-hidden">
-      {/* Mobile backdrop */}
+    <div className="flex h-screen bg-background text-foreground overflow-hidden">
+      {/* Mobile Drawer Overlay */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-20 bg-black/40 md:hidden"
+          className="fixed inset-0 z-30 bg-black/50 backdrop-blur-xs md:hidden transition-opacity"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
-      {/* Sidebar — fixed drawer on mobile, inline collapsible on md+ */}
+      {/* Modern Collapsible Sidebar */}
       <aside
         className={`
-          fixed inset-y-0 left-0 z-30 flex flex-col w-72 overflow-hidden
-          bg-zinc-50 dark:bg-zinc-900
-          border-r border-zinc-200 dark:border-zinc-700
-          transition-all duration-300
+          fixed inset-y-0 left-0 z-40 flex flex-col w-80 sm:w-72 overflow-hidden
+          bg-[var(--sidebar-bg)] border-r border-[var(--sidebar-border)]
+          transition-all duration-300 ease-in-out
           ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}
           md:relative md:z-auto md:translate-x-0 md:flex-shrink-0
-          ${sidebarOpen ? "md:w-64" : "md:w-0 md:border-r-0"}
+          ${sidebarOpen ? "md:w-72" : "md:w-0 md:border-r-0"}
         `}
       >
-        <div className="p-3 border-b border-zinc-200 dark:border-zinc-700 flex items-center justify-between">
-          <span className="font-semibold text-sm text-zinc-700 dark:text-zinc-300">
-            Chats
-          </span>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={newChat}
-              title="New chat"
-              className="p-1.5 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
-            >
+        {/* Sidebar Header & New Chat button */}
+        <div className="p-3 border-b border-[var(--sidebar-border)] space-y-2.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-xl bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xs font-bold shadow-sm">
+                AI
+              </div>
+              <span className="font-bold text-sm tracking-tight gradient-text-subtle">
+                AI Studio
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setSidebarOpen(false)}
+                title="Collapse sidebar"
+                className="p-1.5 rounded-lg hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M11 19l-7-7 7-7m8 14l-7-7 7-7"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <button
+            onClick={newChat}
+            className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl bg-zinc-900 dark:bg-zinc-100 hover:bg-zinc-800 dark:hover:bg-white text-white dark:text-zinc-900 text-xs font-semibold transition-all shadow-sm group"
+          >
+            <div className="flex items-center gap-2">
               <svg
                 className="w-4 h-4"
                 fill="none"
@@ -764,52 +835,53 @@ export default function ChatInterface({
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  strokeWidth={2}
+                  strokeWidth={2.5}
                   d="M12 4v16m8-8H4"
                 />
               </svg>
-            </button>
-            <button
-              onClick={() => setSidebarOpen(false)}
-              title="Close sidebar"
-              className="p-1.5 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors md:hidden"
-            >
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              </svg>
-            </button>
-          </div>
+              <span>New Conversation</span>
+            </div>
+            <span className="text-[10px] opacity-60 font-mono">⌘N</span>
+          </button>
         </div>
 
-        {/* Sidebar tabs */}
-        <div className="flex border-b border-zinc-200 dark:border-zinc-700">
-          {(["chats", "gpts", "providers"] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => setSidebarTab(t)}
-              className={`flex-1 py-2 text-xs font-medium transition-colors ${
-                sidebarTab === t
-                  ? "text-zinc-900 dark:text-zinc-100 border-b-2 border-zinc-900 dark:border-zinc-100"
-                  : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 border-b-2 border-transparent"
-              }`}
-            >
-              {t === "chats" ? "Chats" : t === "gpts" ? "GPTs" : "Providers"}
-            </button>
-          ))}
+        {/* Sidebar Tabs */}
+        <div className="flex bg-zinc-200/40 dark:bg-zinc-800/40 p-1 mx-3 my-2 rounded-xl text-xs font-medium">
+          <button
+            onClick={() => setSidebarTab("chats")}
+            className={`flex-1 py-1.5 rounded-lg transition-all ${
+              sidebarTab === "chats"
+                ? "bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-xs"
+                : "text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-300"
+            }`}
+          >
+            Chats
+          </button>
+          <button
+            onClick={() => setSidebarTab("gpts")}
+            className={`flex-1 py-1.5 rounded-lg transition-all ${
+              sidebarTab === "gpts"
+                ? "bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-xs"
+                : "text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-300"
+            }`}
+          >
+            Personas
+          </button>
+          <button
+            onClick={() => setSidebarTab("providers")}
+            className={`flex-1 py-1.5 rounded-lg transition-all ${
+              sidebarTab === "providers"
+                ? "bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-xs"
+                : "text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-300"
+            }`}
+          >
+            Providers
+          </button>
         </div>
 
+        {/* Tab Content */}
         {sidebarTab === "gpts" ? (
-          <div className="flex-1 overflow-y-auto py-2">
+          <div className="flex-1 overflow-y-auto">
             <GptManager
               user={user}
               gpts={gpts}
@@ -818,7 +890,7 @@ export default function ChatInterface({
             />
           </div>
         ) : sidebarTab === "providers" ? (
-          <div className="flex-1 overflow-y-auto py-2">
+          <div className="flex-1 overflow-y-auto">
             <ProviderManager
               user={user}
               providers={providers}
@@ -827,94 +899,144 @@ export default function ChatInterface({
             />
           </div>
         ) : (
-        <nav className="flex-1 overflow-y-auto py-2 px-2 space-y-4">
-          {sections.map(({ label, chats: convs }) => (
-            <div key={label}>
-              <p className="px-2 py-1 text-xs font-medium text-zinc-400 dark:text-zinc-500 uppercase tracking-wider">
-                {label}
-              </p>
-              <ul className="space-y-0.5">
-                {convs.map((c) => (
-                  <li key={c.id}>
-                    <button
-                      onClick={() => selectConversation(c.id)}
-                      className={`group w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center justify-between ${
-                        activeId === c.id
-                          ? "bg-zinc-200 dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100"
-                          : "hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-600 dark:text-zinc-400"
-                      }`}
-                    >
-                      <span className="truncate flex-1">{c.title}</span>
-                      <span
-                        role="button"
-                        onClick={(e) => togglePin(e, c.id)}
-                        className={`ml-1 p-0.5 rounded transition-opacity ${
-                          c.pinned
-                            ? "text-blue-500"
-                            : "text-zinc-500 sm:opacity-0 sm:group-hover:opacity-100 hover:text-blue-500"
-                        }`}
-                        title={c.pinned ? "Unpin" : "Pin"}
-                      >
-                        <svg
-                          className="w-3.5 h-3.5"
-                          fill={c.pinned ? "currentColor" : "none"}
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M12 21s-7-5.5-7-11a7 7 0 1114 0c0 5.5-7 11-7 11z"
-                          />
-                        </svg>
-                      </span>
-                      <span
-                        role="button"
-                        onClick={(e) => deleteConversation(e, c.id)}
-                        className="ml-1 sm:opacity-0 sm:group-hover:opacity-100 p-0.5 rounded hover:text-red-500 transition-opacity"
-                        title="Delete"
-                      >
-                        <svg
-                          className="w-3.5 h-3.5"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M6 18L18 6M6 6l12 12"
-                          />
-                        </svg>
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+          <div className="flex-1 flex flex-col min-h-0">
+            {/* Search bar */}
+            <div className="px-3 pb-2">
+              <div className="relative">
+                <svg
+                  className="w-3.5 h-3.5 absolute left-3 top-2.5 text-zinc-400"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                  />
+                </svg>
+                <input
+                  type="text"
+                  placeholder="Search chats…"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-8.5 pr-3 py-1.5 text-xs rounded-xl bg-zinc-200/50 dark:bg-zinc-800/60 border border-transparent focus:border-indigo-500/40 outline-none text-zinc-900 dark:text-zinc-100 placeholder-zinc-400"
+                />
+              </div>
             </div>
-          ))}
 
-          {chats.length === 0 && (
-            <p className="px-3 py-4 text-xs text-zinc-400 dark:text-zinc-500 text-center">
-              No conversations yet
-            </p>
-          )}
-        </nav>
+            {/* Conversation List */}
+            <nav className="flex-1 overflow-y-auto px-2 space-y-4">
+              {sections.map(({ label, chats: convs }) => (
+                <div key={label} className="space-y-1">
+                  <p className="px-2 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">
+                    {label}
+                  </p>
+                  <div className="space-y-0.5">
+                    {convs.map((c) => {
+                      const isCurrent = activeId === c.id;
+                      return (
+                        <div
+                          key={c.id}
+                          onClick={() => selectConversation(c.id)}
+                          className={`group w-full text-left px-2.5 py-2 rounded-xl text-xs transition-all flex items-center justify-between cursor-pointer ${
+                            isCurrent
+                              ? "bg-zinc-200/80 dark:bg-zinc-800 font-semibold text-zinc-900 dark:text-zinc-100"
+                              : "hover:bg-zinc-200/40 dark:hover:bg-zinc-800/50 text-zinc-600 dark:text-zinc-400"
+                          }`}
+                        >
+                          <span className="truncate flex-1 pr-1">{c.title}</span>
+
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={(e) => togglePin(e, c.id)}
+                              className={`p-1 rounded-md transition-colors ${
+                                c.pinned
+                                  ? "text-indigo-500 opacity-100"
+                                  : "text-zinc-400 hover:text-indigo-500"
+                              }`}
+                              title={c.pinned ? "Unpin" : "Pin to top"}
+                            >
+                              <svg
+                                className="w-3 h-3"
+                                fill={c.pinned ? "currentColor" : "none"}
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M12 21s-7-5.5-7-11a7 7 0 1114 0c0 5.5-7 11-7 11z"
+                                />
+                              </svg>
+                            </button>
+
+                            <button
+                              onClick={(e) => deleteConversation(e, c.id)}
+                              className="p-1 rounded-md text-zinc-400 hover:text-rose-500 transition-colors"
+                              title="Delete chat"
+                            >
+                              <svg
+                                className="w-3 h-3"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+
+              {chats.length === 0 && (
+                <div className="p-4 text-center text-xs text-zinc-400">
+                  No conversations yet. Start a new chat!
+                </div>
+              )}
+            </nav>
+          </div>
         )}
 
-        <div className="p-3 border-t border-zinc-200 dark:border-zinc-700 flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full bg-zinc-300 dark:bg-zinc-700 flex-shrink-0 flex items-center justify-center text-sm font-semibold">
-            {(user.displayName ?? user.email ?? "?")[0].toUpperCase()}
+        {/* User Profile Card Footer */}
+        <div className="p-3 border-t border-[var(--sidebar-border)] flex items-center justify-between">
+          <div className="flex items-center gap-2.5 min-w-0">
+            {user.photoURL ? (
+              <img
+                src={user.photoURL}
+                alt="Avatar"
+                className="w-8 h-8 rounded-full border border-zinc-200 dark:border-zinc-700 flex-shrink-0"
+              />
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-600 text-white font-bold text-xs flex items-center justify-center flex-shrink-0">
+                {(user.displayName ?? user.email ?? "?")[0].toUpperCase()}
+              </div>
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 truncate">
+                {user.displayName ?? "User"}
+              </p>
+              <p className="text-[10px] text-zinc-400 truncate">
+                {user.email}
+              </p>
+            </div>
           </div>
-          <span className="text-sm truncate flex-1 text-zinc-700 dark:text-zinc-300">
-            {user.displayName ?? user.email}
-          </span>
+
           <button
             onClick={signOut}
             title="Sign out"
-            className="p-1.5 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors text-zinc-500 flex-shrink-0"
+            className="p-1.5 rounded-xl hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60 text-zinc-400 hover:text-rose-500 transition-colors flex-shrink-0"
           >
             <svg
               className="w-4 h-4"
@@ -933,82 +1055,95 @@ export default function ChatInterface({
         </div>
       </aside>
 
-      {/* Main area */}
-      <div className="flex flex-col flex-1 min-w-0">
-        {/* Top bar */}
-        <header className="h-14 flex items-center px-3 gap-2 border-b border-zinc-200 dark:border-zinc-700 bg-white dark:bg-black flex-shrink-0">
-          <button
-            onClick={() => setSidebarOpen((o) => !o)}
-            title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-            className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors flex-shrink-0"
-          >
-            <svg
-              className="w-5 h-5 text-zinc-500"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M4 6h16M4 12h16M4 18h16"
-              />
-            </svg>
-          </button>
-          <span className="font-semibold text-sm sm:text-base truncate flex-1">
-            {isTemporaryMode
-              ? "Temporary Chat"
-              : activeConversation
-                ? activeConversation.title
-                : "New Chat"}
-          </span>
-
-          <GptPicker
-            gpts={gpts}
-            activeGptId={activeGptId}
-            onSelect={setActiveGptId}
-          />
-
-          <ProviderPicker
-            user={user}
-            providers={providers}
-            activeProviderId={activeProviderId}
-            activeModel={activeModel}
-            onSelect={handleProviderSelect}
-          />
-
-          <button
-            onClick={newChat}
-            className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-zinc-500 flex-shrink-0"
-            title="New chat"
-          >
-            <svg
-              className="w-4 h-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 4v16m8-8H4"
-              />
-            </svg>
-          </button>
-
-          {/* Settings gear + dropdown */}
-          <div ref={settingsRef} className="relative flex-shrink-0">
+      {/* Main Chat Workspace */}
+      <div className="flex flex-col flex-1 min-w-0 h-full relative">
+        {/* Top Floating App Bar */}
+        <header className="h-14 flex items-center justify-between px-3 sm:px-4 gap-2 border-b border-[var(--sidebar-border)] bg-background/80 backdrop-blur-md z-20 flex-shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
             <button
-              onClick={() => setSettingsOpen((o) => !o)}
-              className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-zinc-500"
-              title="Settings"
-              aria-haspopup="true"
-              aria-expanded={settingsOpen}
+              onClick={() => setSidebarOpen((o) => !o)}
+              title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+              className="p-2 rounded-xl hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors flex-shrink-0"
             >
               <svg
                 className="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 6h16M4 12h16M4 18h16"
+                />
+              </svg>
+            </button>
+
+            <span className="font-semibold text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 truncate max-w-[140px] sm:max-w-[240px]">
+              {isTemporaryMode
+                ? "Incognito Temporary Mode"
+                : activeConversation
+                  ? activeConversation.title
+                  : "New Conversation"}
+            </span>
+          </div>
+
+          {/* Center/Right Actions */}
+          <div className="flex items-center gap-1.5">
+            {/* Persona Selector */}
+            <GptPicker
+              gpts={gpts}
+              activeGptId={activeGptId}
+              onSelect={setActiveGptId}
+            />
+
+            {/* Provider & Model Selector */}
+            <ProviderPicker
+              user={user}
+              providers={providers}
+              activeProviderId={activeProviderId}
+              activeModel={activeModel}
+              onSelect={(pId, m) => {
+                setActiveProviderId(pId);
+                setActiveModel(m);
+              }}
+            />
+
+            {/* Export Chat */}
+            {allMessages.length > 0 && (
+              <button
+                onClick={() => setExportModalOpen(true)}
+                title="Export Conversation"
+                className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60 transition-colors hidden sm:block"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"
+                  />
+                </svg>
+              </button>
+            )}
+
+            {/* Theme Toggle */}
+            <ThemeToggle />
+
+            {/* Settings Modal Toggle */}
+            <button
+              onClick={() => setSettingsModalOpen(true)}
+              title="Settings & Shortcuts"
+              className="p-2 rounded-xl text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60 transition-colors"
+            >
+              <svg
+                className="w-4 h-4"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -1027,267 +1162,314 @@ export default function ChatInterface({
                 />
               </svg>
             </button>
-
-            {settingsOpen && (
-              <div className="absolute right-0 top-full mt-1 w-64 z-50 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-lg p-2">
-                <div className="flex items-center justify-between px-2 py-1.5">
-                  <span className="text-sm text-zinc-700 dark:text-zinc-300">
-                    Include history
-                  </span>
-                  <button
-                    onClick={() => setUseHistory((o) => !o)}
-                    role="switch"
-                    aria-checked={useHistory}
-                    title={useHistory ? "History on" : "History off"}
-                    className="inline-flex items-center"
-                  >
-                    <span
-                      className={`relative w-9 h-5 rounded-full transition-colors ${
-                        useHistory
-                          ? "bg-zinc-800 dark:bg-zinc-100"
-                          : "bg-zinc-300 dark:bg-zinc-600"
-                      }`}
-                    >
-                      <span
-                        className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white dark:bg-black transition-transform ${
-                          useHistory ? "translate-x-4" : ""
-                        }`}
-                      />
-                    </span>
-                  </button>
-                </div>
-                <p className="px-2 pb-1 text-[11px] text-zinc-400 dark:text-zinc-500">
-                  Send prior messages as context.
-                </p>
-              </div>
-            )}
           </div>
         </header>
 
-        {/* Messages */}
-        <main className="flex-1 overflow-y-auto">
-          {!activeConversation && !isTemporaryMode ? (
-            <div className="flex flex-col items-center justify-center h-full gap-4 px-4">
-              <div className="w-12 h-12 rounded-2xl bg-zinc-900 dark:bg-zinc-100 flex items-center justify-center">
-                <svg
-                  className="w-6 h-6 text-white dark:text-zinc-900"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"
-                  />
-                </svg>
+        {/* Message Feed Area */}
+        <main className="flex-1 overflow-y-auto relative bg-radial-mesh">
+          {!activeConversation && !isTemporaryMode && allMessages.length === 0 ? (
+            /* Empty State / Inspiration Hub */
+            <div className="max-w-3xl mx-auto px-4 py-8 sm:py-12 flex flex-col items-center justify-center min-h-full space-y-8 animate-message">
+              <div className="text-center space-y-3">
+                <div className="w-14 h-14 rounded-3xl bg-gradient-to-tr from-indigo-500 to-purple-600 text-white text-2xl flex items-center justify-center mx-auto shadow-xl shadow-indigo-500/20">
+                  {activeGpt.icon ?? "✨"}
+                </div>
+                <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
+                  How can I help you today?
+                </h1>
+                <p className="text-xs sm:text-sm text-zinc-500 dark:text-zinc-400 max-w-md mx-auto">
+                  Using <span className="font-semibold text-zinc-800 dark:text-zinc-200">{activeGpt.name}</span> with{" "}
+                  <span className="font-semibold text-zinc-800 dark:text-zinc-200">
+                    {activeProvider ? providerDisplayName(activeProvider) : "Free Opencode Zen"}
+                  </span>
+                </p>
               </div>
-              <h1 className="text-xl sm:text-2xl font-semibold text-zinc-800 dark:text-zinc-200 text-center">
-                How can I help you today?
-              </h1>
-              <p className="text-sm text-zinc-500 dark:text-zinc-400 text-center">
-                Start a conversation by typing a message below.
-              </p>
+
+              {/* Starter Prompt Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full">
+                {STARTER_PROMPTS.map((sp) => (
+                  <button
+                    key={sp.title}
+                    onClick={() => sendMessage(sp.prompt)}
+                    className="p-4 rounded-2xl glass-card hover:border-indigo-500/40 hover:bg-indigo-500/5 transition-all text-left group shadow-xs space-y-1.5"
+                  >
+                    <span className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">
+                      {sp.category}
+                    </span>
+                    <p className="text-xs sm:text-sm font-semibold text-zinc-900 dark:text-zinc-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                      {sp.title}
+                    </p>
+                    <p className="text-[11px] text-zinc-500 line-clamp-2 leading-relaxed">
+                      {sp.prompt}
+                    </p>
+                  </button>
+                ))}
+              </div>
+
+              {/* Incognito Chat Button */}
               <button
                 onClick={startTemporaryChat}
-                className="mt-1 px-4 py-2 rounded-full border border-zinc-300 dark:border-zinc-600 text-sm text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors flex items-center gap-2"
+                className="px-4 py-2 rounded-xl border border-zinc-200/80 dark:border-zinc-800 text-xs font-medium text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-all flex items-center gap-2"
               >
-                <svg
-                  className="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"
-                  />
-                </svg>
-                Start a temporary chat
+                <span>🕶️</span>
+                <span>Start an incognito temporary chat (not saved)</span>
               </button>
             </div>
           ) : (
-            <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
-              {isTemporaryMode && allMessages.length === 0 && (
-                <p className="text-center text-sm text-zinc-400 dark:text-zinc-500">
-                  This is a temporary chat — nothing will be saved. Messages
-                  disappear when you refresh the page.
-                </p>
+            /* Active Messages Stream */
+            <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+              {isTemporaryMode && (
+                <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 text-xs text-center flex items-center justify-center gap-2">
+                  <span>🕶️</span>
+                  <span>
+                    Temporary incognito mode active. Messages will disappear when refreshed.
+                  </span>
+                </div>
               )}
-              {allMessages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`flex gap-3 group ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-                >
+
+              {allMessages.map((msg, index) => {
+                const isUser = msg.role === "user";
+                const isLastAssistant = !isUser && index === allMessages.length - 1;
+                const req = inFlight.find((r) => r.id === msg.id);
+
+                return (
                   <div
-                    className={`flex flex-col gap-1 min-w-0 ${msg.role === "user" ? "items-end" : "items-start"}`}
+                    key={msg.id}
+                    className={`flex gap-3 sm:gap-4 group animate-message ${
+                      isUser ? "justify-end" : "justify-start"
+                    }`}
                   >
+                    {/* Assistant Avatar */}
+                    {!isUser && (
+                      <div className="w-8 h-8 rounded-2xl bg-gradient-to-tr from-indigo-500 to-purple-600 text-white flex items-center justify-center flex-shrink-0 text-sm shadow-sm mt-0.5">
+                        {activeGpt.icon ?? "✨"}
+                      </div>
+                    )}
+
                     <div
-                      className={`px-4 py-2.5 rounded-2xl text-base leading-relaxed min-w-0 max-w-full ${
-                        msg.role === "user"
-                          ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-br-sm whitespace-pre-wrap break-words"
-                          : "bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-bl-sm"
+                      className={`flex flex-col gap-1.5 max-w-[85%] sm:max-w-[78%] ${
+                        isUser ? "items-end" : "items-start"
                       }`}
                     >
-                      {msg.role === "assistant" ? (() => {
-                        const req = inFlight.find((r) => r.id === msg.id);
-                        if (req && req.status === "waiting") {
-                          return (
-                            <span className="inline-flex items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
+                      {/* Bubble */}
+                      <div
+                        className={`px-4 py-3 rounded-3xl text-sm leading-relaxed ${
+                          isUser
+                            ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-tr-sm shadow-sm whitespace-pre-wrap break-words"
+                            : "glass-card text-zinc-900 dark:text-zinc-100 rounded-tl-sm border border-zinc-200/80 dark:border-zinc-800/80"
+                        }`}
+                      >
+                        {!isUser ? (
+                          req && req.status === "waiting" ? (
+                            <span className="inline-flex items-center gap-2 text-zinc-400 text-xs">
                               <svg
-                                className="w-3.5 h-3.5 animate-pulse"
+                                className="w-3.5 h-3.5 animate-spin"
                                 fill="none"
-                                stroke="currentColor"
                                 viewBox="0 0 24 24"
                               >
+                                <circle
+                                  className="opacity-25"
+                                  cx="12"
+                                  cy="12"
+                                  r="10"
+                                  stroke="currentColor"
+                                  strokeWidth="4"
+                                />
                                 <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M12 6v6l4 2"
+                                  className="opacity-75"
+                                  fill="currentColor"
+                                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
                                 />
                               </svg>
-                              Queued…
+                              In queue…
                             </span>
-                          );
-                        }
-                        if (req && req.content === "") {
-                          return (
-                            <span className="inline-flex gap-1 py-0.5">
-                              <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce" />
-                              <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce [animation-delay:120ms]" />
-                              <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce [animation-delay:240ms]" />
-                            </span>
-                          );
-                        }
-                        return <Markdown content={msg.content} />;
-                      })() : (
-                        msg.content
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 px-1">
-                      <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
-                        {formatTime(msg.timestamp)}
-                      </span>
-                      <button
-                        onClick={() => copyMessage(msg.id, msg.content)}
-                        className="p-0.5 rounded text-zinc-400 dark:text-zinc-500
-                                   hover:text-zinc-700 dark:hover:text-zinc-300
-                                   sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
-                        title="Copy message"
-                      >
-                        {copiedMessageId === msg.id ? (
-                          <svg
-                            className="w-3.5 h-3.5 text-emerald-500"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={3}
-                              d="M5 13l4 4L19 7"
-                            />
-                          </svg>
+                          ) : req && req.content === "" ? (
+                            <div className="flex items-center gap-1 py-1">
+                              <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" />
+                              <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce [animation-delay:150ms]" />
+                              <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce [animation-delay:300ms]" />
+                            </div>
+                          ) : (
+                            <Markdown content={msg.content} />
+                          )
                         ) : (
-                          <svg
-                            className="w-3.5 h-3.5"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M8 5H6a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M8 5a2 2 0 002 2h4a2 2 0 002-2M8 5a2 2 0 012-2h4a2 2 0 012 2"
-                            />
-                          </svg>
+                          msg.content
                         )}
-                      </button>
+                      </div>
+
+                      {/* Action & Metadata Bar */}
+                      <div className="flex items-center gap-2.5 px-2 text-[10px] text-zinc-400">
+                        <span>{formatTime(msg.timestamp)}</span>
+
+                        {/* Copy button */}
+                        <button
+                          onClick={() => copyMessage(msg.id, msg.content)}
+                          className="hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors flex items-center gap-1"
+                          title="Copy message"
+                        >
+                          {copiedMessageId === msg.id ? (
+                            <span className="text-emerald-500 font-medium">✓ Copied</span>
+                          ) : (
+                            <span>Copy</span>
+                          )}
+                        </button>
+
+                        {/* User edit shortcut */}
+                        {isUser && (
+                          <button
+                            onClick={() => setInput(msg.content)}
+                            className="hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors"
+                            title="Edit message into input"
+                          >
+                            Edit
+                          </button>
+                        )}
+
+                        {/* Assistant Stop button while streaming */}
+                        {req && req.status === "streaming" && (
+                          <button
+                            onClick={() => stopGeneration(req.id)}
+                            className="text-rose-500 hover:text-rose-600 font-medium flex items-center gap-1"
+                          >
+                            <span>⏹ Stop</span>
+                          </button>
+                        )}
+
+                        {/* Regenerate for last assistant message */}
+                        {isLastAssistant && !busy && (
+                          <button
+                            onClick={regenerateLastResponse}
+                            className="hover:text-indigo-500 transition-colors flex items-center gap-1"
+                            title="Regenerate response"
+                          >
+                            <span>↻ Retry</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
+
+                    {/* User Avatar */}
+                    {isUser && (
+                      <div className="w-8 h-8 rounded-2xl bg-zinc-800 text-white flex items-center justify-center flex-shrink-0 text-xs font-bold shadow-sm mt-0.5">
+                        {(user.displayName ?? user.email ?? "U")[0].toUpperCase()}
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
               <div ref={messagesEndRef} />
             </div>
           )}
         </main>
 
-        {/* Input */}
-        <div className="border-t border-zinc-200 dark:border-zinc-700 bg-white dark:bg-black p-3 sm:p-4">
-          <div className="max-w-4xl mx-auto">
-            <div className="bg-zinc-100 dark:bg-zinc-800 rounded-2xl px-4 py-3 border border-zinc-200 dark:border-zinc-700 focus-within:border-zinc-400 dark:focus-within:border-zinc-500 transition-colors">
-              <div className="flex items-end gap-3">
+        {/* Floating Input Dock */}
+        <div className="border-t border-[var(--sidebar-border)] bg-background/80 backdrop-blur-md p-3 sm:p-4 z-20">
+          <div className="max-w-4xl mx-auto space-y-2">
+            <div className="glass-card rounded-2xl p-2 sm:p-2.5 shadow-lg border border-zinc-200/90 dark:border-zinc-800/90 focus-within:border-indigo-500/60 dark:focus-within:border-indigo-500/60 transition-all">
+              <div className="flex items-end gap-2">
                 <textarea
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Message..."
-                rows={1}
-                className="flex-1 bg-transparent resize-none outline-none text-base text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 max-h-40 overflow-y-auto leading-relaxed"
-                style={{ minHeight: "24px" }}
-                onInput={(e) => {
-                  const el = e.currentTarget;
-                  el.style.height = "auto";
-                  el.style.height = `${el.scrollHeight}px`;
-                }}
-              />
-              <button
-                onClick={sendMessage}
-                disabled={!input.trim()}
-                className="p-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-zinc-700 dark:hover:bg-zinc-300 transition-colors flex-shrink-0"
-                title="Send (Enter)"
-              >
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder={`Message ${activeGpt.name}…`}
+                  rows={1}
+                  className="flex-1 bg-transparent resize-none outline-none text-sm sm:text-base text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 max-h-48 overflow-y-auto leading-relaxed px-2 py-1"
+                  style={{ minHeight: "28px" }}
+                  onInput={(e) => {
+                    const el = e.currentTarget;
+                    el.style.height = "auto";
+                    el.style.height = `${Math.min(el.scrollHeight, 192)}px`;
+                  }}
+                />
+
+                {/* Voice Input */}
+                <VoiceInput
+                  onTranscript={(text) =>
+                    setInput((prev) => (prev ? `${prev} ${text}` : text))
+                  }
+                  disabled={busy}
+                />
+
+                {/* Send / Stop Button */}
                 {busy ? (
-                  <svg
-                    className="w-4 h-4 animate-spin"
-                    fill="none"
-                    viewBox="0 0 24 24"
+                  <button
+                    onClick={() => {
+                      const activeReq = inFlight.find((r) => r.status === "streaming");
+                      if (activeReq) stopGeneration(activeReq.id);
+                    }}
+                    className="p-2 rounded-xl bg-rose-500 hover:bg-rose-600 text-white transition-all flex items-center justify-center flex-shrink-0"
+                    title="Stop Generating"
                   >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                    />
-                  </svg>
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                      <rect x="6" y="6" width="12" height="12" rx="2" />
+                    </svg>
+                  </button>
                 ) : (
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
+                  <button
+                    onClick={() => sendMessage()}
+                    disabled={!input.trim()}
+                    className="p-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-30 disabled:cursor-not-allowed transition-all flex items-center justify-center flex-shrink-0 shadow-md shadow-indigo-500/20"
+                    title="Send message (Enter)"
                   >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M5 12h14M12 5l7 7-7 7"
-                    />
-                  </svg>
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2.5}
+                        d="M5 12h14M12 5l7 7-7 7"
+                      />
+                    </svg>
+                  </button>
                 )}
-              </button>
               </div>
             </div>
-            <p className="text-center text-[11px] text-zinc-400 dark:text-zinc-500 mt-2 hidden sm:block">
-              Press Enter to send · Shift+Enter for new line
-            </p>
+
+            {/* Input Footer Indicator */}
+            <div className="flex items-center justify-between px-2 text-[10px] text-zinc-400">
+              <div className="flex items-center gap-2">
+                <span className="hidden sm:inline">
+                  {settings.enterToSend ? "Press Enter to send · Shift+Enter for new line" : "Enter adds newline"}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span>{input.length} chars</span>
+                <span>•</span>
+                <span>{activeProvider ? providerDisplayName(activeProvider) : "Free Tier"}</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
+
+      {/* Export Modal */}
+      <ChatExportModal
+        isOpen={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        chat={activeConversation}
+        messages={allMessages}
+      />
+
+      {/* Settings Modal */}
+      <SettingsModal
+        isOpen={settingsModalOpen}
+        onClose={() => setSettingsModalOpen(false)}
+        settings={settings}
+        onUpdateSettings={setSettings}
+        onOpenProvidersTab={() => {
+          setSidebarOpen(true);
+          setSidebarTab("providers");
+        }}
+        onOpenGptsTab={() => {
+          setSidebarOpen(true);
+          setSidebarTab("gpts");
+        }}
+      />
     </div>
   );
 }

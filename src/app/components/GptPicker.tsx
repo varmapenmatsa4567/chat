@@ -80,10 +80,20 @@ export default function GptPicker({ gpts, activeGptId, onSelect }: Props) {
   }, [open]);
 
   return (
-    <div ref={rootRef} className="relative flex-shrink-0 min-w-0">
+    <div ref={rootRef} className="relative flex-shrink-0">
+      {/* Mobile Compact Trigger Button (< sm) */}
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-zinc-200/80 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/80 hover:bg-zinc-100 dark:hover:bg-zinc-800/90 transition-all text-xs font-medium max-w-[160px] sm:max-w-[220px]"
+        className="sm:hidden flex items-center justify-center w-8 h-8 rounded-xl border border-zinc-200/80 dark:border-zinc-800 bg-zinc-50/90 dark:bg-zinc-900/90 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-all text-xs"
+        title={`Persona: ${active.name}`}
+      >
+        <span className="text-sm">{active.icon ?? "🎭"}</span>
+      </button>
+
+      {/* Desktop Rich Trigger Button (>= sm) */}
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl border border-zinc-200/80 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/80 hover:bg-zinc-100 dark:hover:bg-zinc-800/90 transition-all text-xs font-medium max-w-[170px]"
         title="Switch Persona / Custom GPT"
       >
         <span className="text-sm">{active.icon ?? "🎭"}</span>
@@ -106,7 +116,7 @@ export default function GptPicker({ gpts, activeGptId, onSelect }: Props) {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-80 z-50 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xl p-3 animate-message space-y-3">
+        <div className="fixed sm:absolute right-3 sm:right-0 top-16 sm:top-full sm:mt-2 w-[calc(100vw-24px)] sm:w-80 max-w-sm z-50 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xl p-3 animate-message space-y-3">
           <div className="flex items-center justify-between px-1">
             <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
               AI Persona & Mode

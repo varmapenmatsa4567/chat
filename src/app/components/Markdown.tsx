@@ -27,6 +27,7 @@ function getCodeLanguage(node: unknown): string | undefined {
 }
 
 // Wraps a <pre> block with a header (language label + copy button) and sleek styling.
+// Scopes horizontal scrolling strictly to the <pre> block without expanding parent.
 function CodeBlock({
   language,
   children,
@@ -46,15 +47,15 @@ function CodeBlock({
   }
 
   return (
-    <div className="group !my-4 rounded-2xl border border-zinc-200/80 dark:border-zinc-800 overflow-hidden bg-zinc-950 shadow-md">
-      <div className="flex items-center justify-between px-4 py-2 bg-zinc-900/90 border-b border-zinc-800 text-zinc-400">
-        <div className="flex items-center gap-2">
-          <div className="flex gap-1.5 opacity-60">
+    <div className="w-full max-w-full min-w-0 !my-4 rounded-2xl border border-zinc-200/80 dark:border-zinc-800 overflow-hidden bg-zinc-950 shadow-md">
+      <div className="flex items-center justify-between px-3 sm:px-4 py-2 bg-zinc-900/90 border-b border-zinc-800 text-zinc-400">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="flex gap-1.5 opacity-60 flex-shrink-0">
             <span className="w-2.5 h-2.5 rounded-full bg-rose-500/80" />
             <span className="w-2.5 h-2.5 rounded-full bg-amber-500/80" />
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/80" />
           </div>
-          <span className="text-xs font-mono font-medium lowercase tracking-wider pl-1.5 text-zinc-400">
+          <span className="text-xs font-mono font-medium lowercase tracking-wider pl-1 text-zinc-400 truncate">
             {language ?? "code"}
           </span>
         </div>
@@ -62,7 +63,7 @@ function CodeBlock({
           onClick={handleCopy}
           className="text-xs font-medium px-2.5 py-1 rounded-lg
                      bg-zinc-800 hover:bg-zinc-700 text-zinc-300
-                     border border-zinc-700/60 transition-all flex items-center gap-1.5"
+                     border border-zinc-700/60 transition-all flex items-center gap-1.5 flex-shrink-0 ml-2"
           title="Copy code"
         >
           {copied ? (
@@ -104,7 +105,7 @@ function CodeBlock({
       </div>
       <pre
         ref={preRef}
-        className="p-4 overflow-x-auto text-zinc-100 text-[13.5px] leading-relaxed font-mono"
+        className="w-full max-w-full overflow-x-auto p-3 sm:p-4 text-zinc-100 text-[13px] sm:text-[13.5px] leading-relaxed font-mono block"
       >
         {children}
       </pre>
@@ -114,7 +115,7 @@ function CodeBlock({
 
 export default function Markdown({ content }: MarkdownProps) {
   return (
-    <div className="markdown-body leading-relaxed">
+    <div className="markdown-body w-full max-w-full min-w-0 leading-relaxed overflow-hidden">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
@@ -124,7 +125,7 @@ export default function Markdown({ content }: MarkdownProps) {
               {...props}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-indigo-600 dark:text-indigo-400 font-medium underline decoration-indigo-400/40 dark:decoration-indigo-600 underline-offset-4 hover:text-indigo-500 dark:hover:text-indigo-300 transition-colors"
+              className="text-indigo-600 dark:text-indigo-400 font-medium underline decoration-indigo-400/40 dark:decoration-indigo-600 underline-offset-4 hover:text-indigo-500 dark:hover:text-indigo-300 transition-colors break-words"
             />
           ),
           code: ({ node, className, children, ...props }) => {
@@ -132,7 +133,7 @@ export default function Markdown({ content }: MarkdownProps) {
             if (isBlock) {
               return (
                 <code
-                  className={`${className ?? ""} block overflow-x-auto`}
+                  className={`${className ?? ""} block overflow-x-auto max-w-full`}
                   {...props}
                 >
                   {children}
@@ -141,7 +142,7 @@ export default function Markdown({ content }: MarkdownProps) {
             }
             return (
               <code
-                className="rounded-md bg-zinc-200/70 dark:bg-zinc-800 px-1.5 py-0.5 text-[0.875em] font-mono text-indigo-600 dark:text-indigo-300 font-semibold"
+                className="rounded-md bg-zinc-200/70 dark:bg-zinc-800 px-1.5 py-0.5 text-[0.875em] font-mono text-indigo-600 dark:text-indigo-300 font-semibold break-words"
                 {...props}
               >
                 {children}

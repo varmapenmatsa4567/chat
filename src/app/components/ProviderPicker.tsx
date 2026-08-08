@@ -71,7 +71,6 @@ export default function ProviderPicker({
       setModels(data.models ?? []);
     } catch (e) {
       setModelsError(e instanceof Error ? e.message : "Failed to load models");
-      // Fallback: check if it's a known provider with popular models preset
       const known = KNOWN_PROVIDERS.find((k) => k.baseURL === provider.baseURL);
       if (known?.popularModels) {
         setModels(known.popularModels);
@@ -98,7 +97,7 @@ export default function ProviderPicker({
   }
 
   const currentIcon = active ? getProviderIcon(active.baseURL) : "🍃";
-  const currentDisplayName = active ? providerDisplayName(active) : "Opencode Zen (Default)";
+  const currentDisplayName = active ? providerDisplayName(active) : "Opencode Zen";
   const currentModelDisplay = activeModel || (active ? "Default Model" : "mimo-v2.5-free");
 
   const filteredModels = models.filter((m) =>
@@ -106,18 +105,28 @@ export default function ProviderPicker({
   );
 
   return (
-    <div ref={rootRef} className="relative flex-shrink-0 min-w-0">
+    <div ref={rootRef} className="relative flex-shrink-0">
+      {/* Mobile Compact Trigger Button (< sm) */}
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-zinc-200/80 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/80 hover:bg-zinc-100 dark:hover:bg-zinc-800/90 transition-all text-xs font-medium max-w-[200px] sm:max-w-[280px]"
+        className="sm:hidden flex items-center justify-center w-8 h-8 rounded-xl border border-zinc-200/80 dark:border-zinc-800 bg-zinc-50/90 dark:bg-zinc-900/90 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-all text-xs"
+        title={`Provider: ${currentDisplayName} (${currentModelDisplay})`}
+      >
+        <span className="text-sm">{currentIcon}</span>
+      </button>
+
+      {/* Desktop Rich Trigger Button (>= sm) */}
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl border border-zinc-200/80 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-900/80 hover:bg-zinc-100 dark:hover:bg-zinc-800/90 transition-all text-xs font-medium max-w-[220px]"
         title="Select AI Provider & Model"
       >
         <span className="text-sm">{currentIcon}</span>
         <div className="flex flex-col items-start min-w-0 text-left">
-          <span className="text-zinc-900 dark:text-zinc-100 font-semibold truncate max-w-[130px] sm:max-w-[190px]">
+          <span className="text-zinc-900 dark:text-zinc-100 font-semibold truncate max-w-[140px]">
             {currentDisplayName}
           </span>
-          <span className="text-[10px] text-zinc-500 truncate max-w-[130px] sm:max-w-[190px]">
+          <span className="text-[10px] text-zinc-500 truncate max-w-[140px]">
             {currentModelDisplay}
           </span>
         </div>
@@ -137,14 +146,14 @@ export default function ProviderPicker({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-84 z-50 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xl p-3 animate-message space-y-3">
+        <div className="fixed sm:absolute right-3 sm:right-0 top-16 sm:top-full sm:mt-2 w-[calc(100vw-24px)] sm:w-84 max-w-sm z-50 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-2xl p-3 animate-message space-y-3">
           {/* Header */}
           <div className="flex items-center justify-between px-1">
             <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-              Active Provider
+              AI Provider
             </span>
             <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 font-medium">
-              Ready
+              Connected
             </span>
           </div>
 
@@ -250,7 +259,7 @@ export default function ProviderPicker({
                 </div>
               ) : !loadingModels ? (
                 <div className="p-2 text-center text-xs text-zinc-400">
-                  No models returned. You can configure in sidebar.
+                  No models found. You can configure in sidebar.
                 </div>
               ) : null}
             </div>

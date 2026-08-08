@@ -766,11 +766,11 @@ export default function ChatInterface({
 
   // Main UI Workspace
   return (
-    <div className="flex h-screen bg-background text-foreground overflow-hidden">
-      {/* Mobile Drawer Overlay */}
+    <div className="flex h-screen w-full max-w-full bg-background text-foreground overflow-hidden">
+      {/* Mobile Drawer Backdrop */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-30 bg-black/50 backdrop-blur-xs md:hidden transition-opacity"
+          className="fixed inset-0 z-40 bg-black/50 backdrop-blur-xs md:hidden transition-opacity"
           onClick={() => setSidebarOpen(false)}
         />
       )}
@@ -778,7 +778,7 @@ export default function ChatInterface({
       {/* Modern Collapsible Sidebar */}
       <aside
         className={`
-          fixed inset-y-0 left-0 z-40 flex flex-col w-80 sm:w-72 overflow-hidden
+          fixed inset-y-0 left-0 z-50 flex flex-col w-80 sm:w-72 overflow-hidden
           bg-[var(--sidebar-bg)] border-r border-[var(--sidebar-border)]
           transition-all duration-300 ease-in-out
           ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}
@@ -1056,14 +1056,16 @@ export default function ChatInterface({
       </aside>
 
       {/* Main Chat Workspace */}
-      <div className="flex flex-col flex-1 min-w-0 h-full relative">
-        {/* Top Floating App Bar */}
-        <header className="h-14 flex items-center justify-between px-3 sm:px-4 gap-2 border-b border-[var(--sidebar-border)] bg-background/80 backdrop-blur-md z-20 flex-shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
+      <div className="flex flex-col flex-1 min-w-0 h-full max-w-full overflow-hidden relative">
+        {/* Top App Bar - Fixed & Non-Cluttered */}
+        <header className="h-14 flex items-center justify-between px-2.5 sm:px-4 gap-1.5 sm:gap-2 border-b border-[var(--sidebar-border)] bg-background/90 backdrop-blur-md z-30 flex-shrink-0 w-full max-w-full">
+          {/* Left: Hamburger + Chat Name */}
+          <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1">
             <button
               onClick={() => setSidebarOpen((o) => !o)}
               title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
-              className="p-2 rounded-xl hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors flex-shrink-0"
+              className="p-2 rounded-xl hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60 text-zinc-600 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-zinc-100 transition-colors flex-shrink-0 touch-manipulation"
+              aria-label="Toggle Navigation Sidebar"
             >
               <svg
                 className="w-5 h-5"
@@ -1074,23 +1076,23 @@ export default function ChatInterface({
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  strokeWidth={2}
+                  strokeWidth={2.2}
                   d="M4 6h16M4 12h16M4 18h16"
                 />
               </svg>
             </button>
 
-            <span className="font-semibold text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 truncate max-w-[140px] sm:max-w-[240px]">
+            <span className="font-semibold text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 truncate min-w-0 max-w-[120px] xs:max-w-[180px] sm:max-w-[280px]">
               {isTemporaryMode
-                ? "Incognito Temporary Mode"
+                ? "Incognito Mode"
                 : activeConversation
                   ? activeConversation.title
                   : "New Conversation"}
             </span>
           </div>
 
-          {/* Center/Right Actions */}
-          <div className="flex items-center gap-1.5">
+          {/* Right Actions: Compact on mobile, full on desktop */}
+          <div className="flex items-center gap-1 sm:gap-1.5 flex-shrink-0">
             {/* Persona Selector */}
             <GptPicker
               gpts={gpts}
@@ -1110,7 +1112,7 @@ export default function ChatInterface({
               }}
             />
 
-            {/* Export Chat */}
+            {/* Export Chat (Visible on >= sm) */}
             {allMessages.length > 0 && (
               <button
                 onClick={() => setExportModalOpen(true)}
@@ -1166,10 +1168,10 @@ export default function ChatInterface({
         </header>
 
         {/* Message Feed Area */}
-        <main className="flex-1 overflow-y-auto relative bg-radial-mesh">
+        <main className="flex-1 overflow-y-auto overflow-x-hidden relative bg-radial-mesh w-full max-w-full">
           {!activeConversation && !isTemporaryMode && allMessages.length === 0 ? (
             /* Empty State / Inspiration Hub */
-            <div className="max-w-3xl mx-auto px-4 py-8 sm:py-12 flex flex-col items-center justify-center min-h-full space-y-8 animate-message">
+            <div className="max-w-3xl w-full mx-auto px-4 py-8 sm:py-12 flex flex-col items-center justify-center min-h-full space-y-8 animate-message">
               <div className="text-center space-y-3">
                 <div className="w-14 h-14 rounded-3xl bg-gradient-to-tr from-indigo-500 to-purple-600 text-white text-2xl flex items-center justify-center mx-auto shadow-xl shadow-indigo-500/20">
                   {activeGpt.icon ?? "✨"}
@@ -1216,8 +1218,8 @@ export default function ChatInterface({
               </button>
             </div>
           ) : (
-            /* Active Messages Stream */
-            <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+            /* Active Messages Stream - Width Constrained */
+            <div className="max-w-4xl w-full mx-auto px-3 sm:px-6 py-6 space-y-6 min-w-0 overflow-x-hidden">
               {isTemporaryMode && (
                 <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 text-xs text-center flex items-center justify-center gap-2">
                   <span>🕶️</span>
@@ -1235,25 +1237,25 @@ export default function ChatInterface({
                 return (
                   <div
                     key={msg.id}
-                    className={`flex gap-3 sm:gap-4 group animate-message ${
+                    className={`flex gap-2.5 sm:gap-4 group animate-message w-full min-w-0 ${
                       isUser ? "justify-end" : "justify-start"
                     }`}
                   >
                     {/* Assistant Avatar */}
                     {!isUser && (
-                      <div className="w-8 h-8 rounded-2xl bg-gradient-to-tr from-indigo-500 to-purple-600 text-white flex items-center justify-center flex-shrink-0 text-sm shadow-sm mt-0.5">
+                      <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-2xl bg-gradient-to-tr from-indigo-500 to-purple-600 text-white flex items-center justify-center flex-shrink-0 text-xs sm:text-sm shadow-sm mt-0.5">
                         {activeGpt.icon ?? "✨"}
                       </div>
                     )}
 
                     <div
-                      className={`flex flex-col gap-1.5 max-w-[85%] sm:max-w-[78%] ${
+                      className={`flex flex-col gap-1.5 min-w-0 max-w-[88%] sm:max-w-[80%] ${
                         isUser ? "items-end" : "items-start"
                       }`}
                     >
                       {/* Bubble */}
                       <div
-                        className={`px-4 py-3 rounded-3xl text-sm leading-relaxed ${
+                        className={`px-3.5 sm:px-4 py-2.5 sm:py-3 rounded-3xl text-sm leading-relaxed w-full min-w-0 overflow-hidden ${
                           isUser
                             ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-tr-sm shadow-sm whitespace-pre-wrap break-words"
                             : "glass-card text-zinc-900 dark:text-zinc-100 rounded-tl-sm border border-zinc-200/80 dark:border-zinc-800/80"
@@ -1350,7 +1352,7 @@ export default function ChatInterface({
 
                     {/* User Avatar */}
                     {isUser && (
-                      <div className="w-8 h-8 rounded-2xl bg-zinc-800 text-white flex items-center justify-center flex-shrink-0 text-xs font-bold shadow-sm mt-0.5">
+                      <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-2xl bg-zinc-800 text-white flex items-center justify-center flex-shrink-0 text-xs font-bold shadow-sm mt-0.5">
                         {(user.displayName ?? user.email ?? "U")[0].toUpperCase()}
                       </div>
                     )}
@@ -1363,10 +1365,10 @@ export default function ChatInterface({
         </main>
 
         {/* Floating Input Dock */}
-        <div className="border-t border-[var(--sidebar-border)] bg-background/80 backdrop-blur-md p-3 sm:p-4 z-20">
-          <div className="max-w-4xl mx-auto space-y-2">
-            <div className="glass-card rounded-2xl p-2 sm:p-2.5 shadow-lg border border-zinc-200/90 dark:border-zinc-800/90 focus-within:border-indigo-500/60 dark:focus-within:border-indigo-500/60 transition-all">
-              <div className="flex items-end gap-2">
+        <div className="border-t border-[var(--sidebar-border)] bg-background/90 backdrop-blur-md p-2.5 sm:p-4 z-20 w-full max-w-full">
+          <div className="max-w-4xl w-full mx-auto space-y-2">
+            <div className="glass-card rounded-2xl p-1.5 sm:p-2.5 shadow-lg border border-zinc-200/90 dark:border-zinc-800/90 focus-within:border-indigo-500/60 dark:focus-within:border-indigo-500/60 transition-all">
+              <div className="flex items-end gap-1.5 sm:gap-2">
                 <textarea
                   ref={inputRef}
                   value={input}
@@ -1374,7 +1376,7 @@ export default function ChatInterface({
                   onKeyDown={handleKeyDown}
                   placeholder={`Message ${activeGpt.name}…`}
                   rows={1}
-                  className="flex-1 bg-transparent resize-none outline-none text-sm sm:text-base text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 max-h-48 overflow-y-auto leading-relaxed px-2 py-1"
+                  className="flex-1 bg-transparent resize-none outline-none text-sm sm:text-base text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 max-h-48 overflow-y-auto leading-relaxed px-2 py-1 min-w-0"
                   style={{ minHeight: "28px" }}
                   onInput={(e) => {
                     const el = e.currentTarget;
@@ -1440,7 +1442,9 @@ export default function ChatInterface({
               <div className="flex items-center gap-2">
                 <span>{input.length} chars</span>
                 <span>•</span>
-                <span>{activeProvider ? providerDisplayName(activeProvider) : "Free Tier"}</span>
+                <span className="truncate max-w-[140px] sm:max-w-none">
+                  {activeProvider ? providerDisplayName(activeProvider) : "Free Tier"}
+                </span>
               </div>
             </div>
           </div>

@@ -78,6 +78,15 @@ export async function POST(request: Request) {
           case "content":
             emit({ t: "content", d: evt.text });
             break;
+          case "reasoning":
+            emit({ t: "reasoning", d: evt.text });
+            break;
+          case "tool_call":
+            emit({ t: "tool_call", name: evt.name, args: evt.args });
+            break;
+          case "tool_result":
+            emit({ t: "tool_result", name: evt.name, ok: evt.ok, detail: evt.detail });
+            break;
           case "status":
             emit({ t: "status", s: evt.status, q: evt.query });
             break;

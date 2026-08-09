@@ -42,6 +42,7 @@ import type {
   CustomGpt,
   AppSettings,
   SearchSource,
+  AgentActivityItem,
 } from "../types";
 
 // Suggested prompt starter cards for empty state
@@ -646,6 +647,10 @@ export default function ChatInterface({
             filename?: string;
             dataUrl?: string;
             size?: number;
+            name?: string;
+            args?: string;
+            ok?: boolean;
+            detail?: string;
           };
           try {
             evt = JSON.parse(line);
@@ -661,6 +666,27 @@ export default function ChatInterface({
             updateInFlight(entry.id, (r) => ({
               ...r,
               sources: evt.urls && evt.urls.length ? evt.urls : r.sources,
+            }));
+          } else if (evt.t === "reasoning" && typeof evt.d === "string") {
+            const text = evt.d;
+            updateInFlight(entry.id, (r) => ({
+              ...r,
+              activity: [...(r.activity ?? []), { kind: "reasoning", text }],
+            }));
+          } else if (evt.t === "tool_call") {
+            const name = evt.name ?? "";
+            const args = evt.args ?? "";
+            updateInFlight(entry.id, (r) => ({
+              ...r,
+              activity: [...(r.activity ?? []), { kind: "tool_call", name, args }],
+            }));
+          } else if (evt.t === "tool_result") {
+            const name = evt.name ?? "";
+            const ok = !!evt.ok;
+            const detail = evt.detail;
+            updateInFlight(entry.id, (r) => ({
+              ...r,
+              activity: [...(r.activity ?? []), { kind: "tool_result", name, ok, detail }],
             }));
           } else if (evt.t === "download" && evt.dataUrl) {
             const filename = evt.filename ?? "file";
@@ -1490,6 +1516,59 @@ export default function ChatInterface({
                           msg.content
                         )}
                       </div>
+
+                      {/* Live agent activity (reasoning + tool calls) */}
+                      {req && req.activity && req.activity.length > 0 && (
+                        <div className="mt-1.5 px-1.5 space-y-1 max-w-full">
+                          {(() => {
+                            const reasoning = req.activity
+                              .filter((a) => a.kind === "reasoning")
+                              .map((a) => a.text)
+                              .join("");
+                            if (!reasoning) return null;
+                            return (
+                              <div className="text-[11px] text-zinc-500 dark:text-zinc-400 italic whitespace-pre-wrap border-l-2 border-zinc-300 dark:border-zinc-700 pl-2">
+                                {reasoning}
+                              </div>
+                            );
+                          })()}
+                          {req.activity
+                            .filter((a): a is Extract<AgentActivityItem, { kind: "tool_call" | "tool_result" }> => a.kind === "tool_call" || a.kind === "tool_result")
+                            .map((a, i) =>
+                              a.kind === "tool_call" ? (
+                                <div
+                                  key={i}
+                                  className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400"
+                                >
+                                  <span className="animate-pulse">⚙️</span>
+                                  <span className="font-medium text-zinc-600 dark:text-zinc-300">
+                                    {a.name}
+                                  </span>
+                                  <span className="truncate text-zinc-400 dark:text-zinc-500">
+                                    {a.args}
+                                  </span>
+                                </div>
+                              ) : (
+                                <div
+                                  key={i}
+                                  className="flex items-center gap-1.5 text-[11px]"
+                                >
+                                  <span className={a.ok ? "text-emerald-500" : "text-rose-500"}>
+                                    {a.ok ? "✓" : "✕"}
+                                  </span>
+                                  <span className="text-zinc-500 dark:text-zinc-400">
+                                    {a.name}
+                                  </span>
+                                  {a.detail && (
+                                    <span className="truncate text-zinc-400 dark:text-zinc-500">
+                                      {a.detail}
+                                    </span>
+                                  )}
+                                </div>
+                              )
+                            )}
+                        </div>
+                      )}
 
                       {/* Search sources */}
                       {req && req.sources && req.sources.length > 0 && (

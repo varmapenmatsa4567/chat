@@ -25,6 +25,43 @@ function isToolError(err: unknown): boolean {
   );
 }
 
+// Produce a compact one-line summary of a tool call's arguments for display
+// (long values like file contents are truncated so we never leak full bodies).
+function summarizeArgs(raw: string): string {
+  let obj: Record<string, unknown>;
+  try {
+    obj = raw ? JSON.parse(raw) : {};
+  } catch {
+    return (raw || "").slice(0, 120);
+  }
+  const parts = Object.entries(obj).map(([k, v]) => {
+    let s = typeof v === "string" ? v : JSON.stringify(v);
+    if (s.length > 40) s = s.slice(0, 40) + "…";
+    return `${k}=${s}`;
+  });
+  return parts.join(", ") || "(no args)";
+}
+
+// Derive a short success/detail label from a tool's JSON result for display.
+function summarizeResult(output: string): { ok: boolean; detail: string } {
+  try {
+    const obj = JSON.parse(output);
+    const ok = obj.success !== false && !obj.error;
+    let detail = "";
+    if (obj.error) detail = String(obj.error);
+    else if (typeof obj.path === "string") detail = obj.path;
+    else if (typeof obj.count === "number") detail = `${obj.count} matches`;
+    else if (typeof obj.results?.length === "number")
+      detail = `${obj.results.length} results`;
+    else if (typeof obj.downloaded === "string") detail = obj.downloaded;
+    else if (typeof obj.message === "string") detail = obj.message;
+    if (!detail) detail = ok ? "done" : "failed";
+    return { ok, detail: detail.slice(0, 80) };
+  } catch {
+    return { ok: true, detail: output.slice(0, 80) };
+  }
+}
+
 export async function runAgent(opts: AgentRunOptions): Promise<{
   content: string;
   sources: SearchSource[];
@@ -77,6 +114,12 @@ export async function runAgent(opts: AgentRunOptions): Promise<{
           content += delta.content;
           turnContent.push(delta.content);
         }
+        // Some reasoning models stream `reasoning_content`; surface it live.
+        const reasoning = (delta as { reasoning_content?: unknown } | undefined)
+          ?.reasoning_content;
+        if (typeof reasoning === "string" && reasoning) {
+          opts.onEvent({ type: "reasoning", text: reasoning });
+        }
         if (delta?.tool_calls) {
           for (const tc of delta.tool_calls) {
             let i = indexToArray.get(tc.index);
@@ -126,6 +169,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<{
           });
         }
 
+        opts.onEvent({ type: "tool_call", name: call.name, args: summarizeArgs(call.arguments) });
+
         let output: string;
         if (!tool) {
           output = JSON.stringify({ error: `Unknown tool: ${call.name}` });
@@ -146,6 +191,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<{
         }
 
         history.push({ role: "tool", tool_call_id: call.id, content: output });
+
+        const res = summarizeResult(output);
+        opts.onEvent({ type: "tool_result", name: call.name, ok: res.ok, detail: res.detail });
 
         if (call.name === "web_search") {
           try {

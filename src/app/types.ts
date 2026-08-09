@@ -22,6 +22,12 @@ export type ApiMessage = {
 
 export type SearchSource = { title: string; url: string };
 
+// A live entry in the agent's activity feed (reasoning + tool calls/results).
+export type AgentActivityItem =
+  | { kind: "reasoning"; text: string }
+  | { kind: "tool_call"; name: string; args: string }
+  | { kind: "tool_result"; name: string; ok: boolean; detail?: string };
+
 export type InFlightRequest = {
   id: string;
   content: string;
@@ -38,6 +44,8 @@ export type InFlightRequest = {
   sources?: SearchSource[];
   // A file/project the agent produced for download (data URL).
   download?: { filename: string; dataUrl: string; size?: number };
+  // Live agent activity feed (reasoning + tool calls/results).
+  activity?: AgentActivityItem[];
 };
 
 export type CustomGpt = {

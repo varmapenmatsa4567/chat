@@ -18,6 +18,9 @@ export type AgentTool = {
 export type AgentStreamEvent =
   | { type: "status"; status: "searching"; query?: string }
   | { type: "content"; text: string }
+  | { type: "reasoning"; text: string }
+  | { type: "tool_call"; name: string; args: string }
+  | { type: "tool_result"; name: string; ok: boolean; detail?: string }
   | { type: "sources"; sources: SearchSource[] }
   | { type: "download"; filename: string; dataUrl: string; size?: number }
   | { type: "error"; message: string }

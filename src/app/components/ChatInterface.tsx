@@ -34,6 +34,7 @@ import {
   type ProviderConfig,
 } from "../../lib/providers";
 import { copyText } from "../lib/clipboard";
+import dynamic from "next/dynamic";
 import type {
   Message,
   ChatMeta,
@@ -44,6 +45,12 @@ import type {
   SearchSource,
   AgentActivityItem,
 } from "../types";
+
+// Live project preview (Sandpack). Loaded lazily to keep the initial bundle small.
+const ProjectPreview = dynamic(() => import("./ProjectPreview"), {
+  ssr: false,
+  loading: () => null,
+});
 
 // Suggested prompt starter cards for empty state
 const STARTER_PROMPTS = [
@@ -1680,6 +1687,13 @@ export default function ChatInterface({
             </div>
           )}
         </main>
+
+        {/* Live project preview (Sandpack) */}
+        <div className="px-3 sm:px-4 pb-2 z-10 w-full max-w-full">
+          <div className="max-w-4xl w-full mx-auto">
+            <ProjectPreview vfs={vfsFiles} />
+          </div>
+        </div>
 
         {/* Floating Input Dock */}
         <div className="border-t border-[var(--sidebar-border)] bg-background/90 backdrop-blur-md p-2.5 sm:p-4 z-20 w-full max-w-full">

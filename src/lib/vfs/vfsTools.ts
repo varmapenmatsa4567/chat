@@ -43,6 +43,13 @@ export function createVfsTools(
 ): AgentTool[] {
   const ok = (r: Json) => JSON.stringify(r);
 
+  // For file-mutating tools, emit the updated snapshot so the client can show
+  // the live preview as soon as files are created (not only at the end).
+  const mutating = (r: Json) => {
+    emit({ type: "vfs", snapshot: vfs.toJSON() });
+    return JSON.stringify(r);
+  };
+
   const tools: AgentTool[] = [
     {
       definition: def(
@@ -51,7 +58,7 @@ export function createVfsTools(
         { path: { type: "string", description: "File path, e.g. src/App.tsx" }, content: { type: "string", description: "Full file content" } },
         ["path", "content"]
       ),
-      run: async (a) => ok(vfs.createFile(str(a.path), str(a.content))),
+      run: async (a) => mutating(vfs.createFile(str(a.path), str(a.content))),
     },
     {
       definition: def(
@@ -69,7 +76,7 @@ export function createVfsTools(
         { path: { type: "string", description: "File path" }, content: { type: "string", description: "New full file content" } },
         ["path", "content"]
       ),
-      run: async (a) => ok(vfs.updateFile(str(a.path), str(a.content))),
+      run: async (a) => mutating(vfs.updateFile(str(a.path), str(a.content))),
     },
     {
       definition: def(
@@ -78,7 +85,7 @@ export function createVfsTools(
         { path: { type: "string", description: "File path" } },
         ["path"]
       ),
-      run: async (a) => ok(vfs.deleteFile(str(a.path))),
+      run: async (a) => mutating(vfs.deleteFile(str(a.path))),
     },
     {
       definition: def(
@@ -105,7 +112,7 @@ export function createVfsTools(
         { path: { type: "string", description: "Directory path, e.g. src/components" } },
         ["path"]
       ),
-      run: async (a) => ok(vfs.createDirectory(str(a.path))),
+      run: async (a) => mutating(vfs.createDirectory(str(a.path))),
     },
     {
       definition: def(
@@ -114,7 +121,7 @@ export function createVfsTools(
         { path: { type: "string", description: "Directory path" } },
         ["path"]
       ),
-      run: async (a) => ok(vfs.deleteDirectory(str(a.path))),
+      run: async (a) => mutating(vfs.deleteDirectory(str(a.path))),
     },
     {
       definition: def(
@@ -141,7 +148,7 @@ export function createVfsTools(
         {},
         []
       ),
-      run: async () => ok(vfs.clearProject()),
+      run: async () => mutating(vfs.clearProject()),
     },
     {
       definition: def(

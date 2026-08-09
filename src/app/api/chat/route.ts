@@ -93,6 +93,9 @@ export async function POST(request: Request) {
           case "sources":
             emit({ t: "sources", urls: evt.sources });
             break;
+          case "vfs":
+            emit({ t: "vfs", files: evt.snapshot });
+            break;
           case "download":
             emit({ t: "download", filename: evt.filename, dataUrl: evt.dataUrl, size: evt.size });
             break;

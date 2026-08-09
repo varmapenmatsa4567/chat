@@ -19,6 +19,7 @@ export type AgentStreamEvent =
   | { type: "status"; status: "searching"; query?: string }
   | { type: "content"; text: string }
   | { type: "sources"; sources: SearchSource[] }
+  | { type: "download"; filename: string; dataUrl: string; size?: number }
   | { type: "error"; message: string }
   | { type: "done" };
 

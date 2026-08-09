@@ -36,6 +36,8 @@ export type InFlightRequest = {
   // Web-search status for the transient bubble.
   searching?: boolean;
   sources?: SearchSource[];
+  // A file/project the agent produced for download (data URL).
+  download?: { filename: string; dataUrl: string; size?: number };
 };
 
 export type CustomGpt = {

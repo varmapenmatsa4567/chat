@@ -9,7 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@paddle-js-models/ocr": "^4.1.1",
     "firebase": "^12.17.1",
+    "jszip": "^3.10.1",
     "next": "16.3.0",
     "openai": "^7.4.0",
     "react": "19.2.8",

@@ -177,6 +177,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<{
     break;
   }
 
-  opts.onEvent({ type: "done" });
+  // NOTE: no "done" event here — the caller emits it after any final payload
+  // (e.g. the VFS snapshot) so the client reads everything before closing.
   return { content: finalContent, sources };
 }

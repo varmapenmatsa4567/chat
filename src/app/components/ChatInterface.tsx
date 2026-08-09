@@ -13,6 +13,7 @@ import {
   updateDoc,
   deleteDoc,
   getDocs,
+  getDoc,
   type Unsubscribe,
 } from "firebase/firestore";
 import { db } from "../../lib/firebase";
@@ -157,6 +158,24 @@ export default function ChatInterface({
     return null;
   });
 
+  // Per-conversation virtual file system. Persisted to Firestore so a project
+  // survives across turns; held in memory (and sent with each request) so the
+  // agent continues from where it left off.
+  const [vfsFiles, setVfsFiles] = useState<{
+    files?: Record<string, string>;
+    dirs?: string[];
+  } | null>(null);
+  // Stable id for temporary chats (no Firestore chat id) so the VFS is still
+  // scoped per temp conversation.
+  const [tempVfsId, setTempVfsId] = useState<string | null>(null);
+
+  // Downloads produced by the agent, keyed by message id so a file/project
+  // stays downloadable even after the message is persisted (not just while the
+  // in-flight bubble is visible).
+  const [downloads, setDownloads] = useState<
+    Record<string, { filename: string; dataUrl: string; size?: number }>
+  >({});
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -172,6 +191,10 @@ export default function ChatInterface({
   const activeGptRef = useRef<CustomGpt>(DEFAULT_GPT);
   const activeProviderRef = useRef<ProviderConfig | null>(null);
   const activeModelRef = useRef<string | null>(null);
+  const vfsRef = useRef(vfsFiles);
+  useEffect(() => {
+    vfsRef.current = vfsFiles;
+  }, [vfsFiles]);
 
   const allAvailableGpts = useMemo(() => [...PRESET_GPTS, ...gpts], [gpts]);
   const activeGpt = allAvailableGpts.find((g) => g.id === activeGptId) ?? DEFAULT_GPT;
@@ -326,6 +349,33 @@ export default function ChatInterface({
     return unsub;
   }, [user]);
 
+  // Load this conversation's VFS snapshot from Firestore when the chat changes.
+  useEffect(() => {
+    let cancelled = false;
+    if (!db || !user || !activeId) {
+      setVfsFiles(null);
+      return;
+    }
+    (async () => {
+      const ref = doc(db, `users/${user.uid}/chats/${activeId}/vfs/project`);
+      try {
+        const snap = await getDoc(ref);
+        if (cancelled) return;
+        if (snap.exists()) {
+          const d = snap.data();
+          setVfsFiles({ files: d.files ?? {}, dirs: d.dirs ?? [] });
+        } else {
+          setVfsFiles({ files: {}, dirs: [] });
+        }
+      } catch {
+        if (!cancelled) setVfsFiles({ files: {}, dirs: [] });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user, activeId]);
+
   // Copy Message Handler
   async function copyMessage(id: string, content: string) {
     if (await copyText(content)) {
@@ -334,6 +384,35 @@ export default function ChatInterface({
         () => setCopiedMessageId((c) => (c === id ? null : c)),
         2000
       );
+    }
+  }
+
+  // Reliably download a data URL (file or zip). We decode the base64 in memory
+  // into a Blob and use an object URL + `download`, which never navigates. We do
+  // NOT rely on `fetch(dataUrl)` (can be blocked by Content-Security-Policy
+  // connect-src) or on a raw <a href="data:..."> (large payloads navigate
+  // instead of downloading).
+  function triggerDownload(filename: string, dataUrl: string) {
+    try {
+      const comma = dataUrl.indexOf(",");
+      if (comma === -1) return;
+      const base64 = dataUrl.slice(comma + 1);
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) {
+      console.error("Download failed", err);
     }
   }
 
@@ -378,6 +457,9 @@ export default function ChatInterface({
     router.replace("/");
     setIsTemporary(false);
     setTempMessages([]);
+    setVfsFiles(null);
+    setTempVfsId(null);
+    setDownloads({});
     setInput("");
     if (window.innerWidth < 768) setSidebarOpen(false);
     inputRef.current?.focus();
@@ -386,6 +468,9 @@ export default function ChatInterface({
   function startTemporaryChat() {
     setIsTemporary(true);
     setTempMessages([]);
+    setVfsFiles({ files: {}, dirs: [] });
+    setTempVfsId(genId());
+    setDownloads({});
     setInput("");
     if (window.innerWidth < 768) setSidebarOpen(false);
     inputRef.current?.focus();
@@ -395,6 +480,8 @@ export default function ChatInterface({
     router.push(`/?chat=${id}`);
     setIsTemporary(false);
     setTempMessages([]);
+    setTempVfsId(null);
+    setDownloads({});
     setInput("");
     if (window.innerWidth < 768) setSidebarOpen(false);
   }
@@ -438,15 +525,23 @@ export default function ChatInterface({
   }
 
   async function commitAssistant(entry: InFlightRequest, content: string) {
+    // Keep any download attached to the persisted message id, so the download
+    // button stays available after the transient bubble is replaced. We read
+    // the download from the live in-flight ref (not the stale `entry` arg,
+    // which updateInFlight never mutates).
+    const persistDownload = (messageId: string) => {
+      const dl = inFlightRef.current.find((r) => r.id === entry.id)?.download;
+      if (dl) {
+        setDownloads((prev) => ({ ...prev, [messageId]: dl }));
+      }
+    };
+
     if (entry.tempMode) {
+      const id = genId();
+      persistDownload(id);
       setTempMessages((prev) => [
         ...prev,
-        {
-          id: genId(),
-          role: "assistant",
-          content,
-          timestamp: new Date(entry.userCreatedAt + 1),
-        },
+        { id, role: "assistant", content, timestamp: new Date(entry.userCreatedAt + 1) },
       ]);
       removeInFlight(entry.id);
       return;
@@ -460,6 +555,7 @@ export default function ChatInterface({
       `users/${user.uid}/chats/${entry.chatId}/messages`
     );
     const id = genId();
+    persistDownload(id);
     updateInFlight(entry.id, (r) => ({ ...r, persistedId: id }));
     await setDoc(doc(msgCol, id), {
       role: "assistant",
@@ -509,6 +605,8 @@ export default function ChatInterface({
         body: JSON.stringify({
           messages: buildHistory(entry),
           searchEnabled: settingsRef.current.searchEnabled ?? false,
+          conversationId: activeId ?? tempVfsId ?? undefined,
+          vfs: vfsRef.current,
           provider: activeProviderRef.current
             ? {
                 baseURL: activeProviderRef.current.baseURL,
@@ -539,7 +637,16 @@ export default function ChatInterface({
           const line = buffer.slice(0, nl).trim();
           buffer = buffer.slice(nl + 1);
           if (!line) continue;
-          let evt: { t?: string; d?: string; s?: string; urls?: SearchSource[] };
+          let evt: {
+            t?: string;
+            d?: string;
+            s?: string;
+            urls?: SearchSource[];
+            files?: { files?: Record<string, string>; dirs?: string[] };
+            filename?: string;
+            dataUrl?: string;
+            size?: number;
+          };
           try {
             evt = JSON.parse(line);
           } catch {
@@ -555,6 +662,30 @@ export default function ChatInterface({
               ...r,
               sources: evt.urls && evt.urls.length ? evt.urls : r.sources,
             }));
+          } else if (evt.t === "download" && evt.dataUrl) {
+            const filename = evt.filename ?? "file";
+            const dataUrl = evt.dataUrl;
+            const size = evt.size;
+            updateInFlight(entry.id, (r) => ({
+              ...r,
+              download: { filename, dataUrl, size },
+            }));
+            setDownloads((prev) => ({ ...prev, [entry.id]: { filename, dataUrl, size } }));
+          } else if (evt.t === "vfs") {
+            const snapshot = evt.files ?? { files: {}, dirs: [] };
+            setVfsFiles(snapshot);
+            vfsRef.current = snapshot;
+            // Persist per conversation so the project survives across turns.
+            if (db && user && activeId && !isTemporaryMode) {
+              try {
+                await setDoc(
+                  doc(db, `users/${user.uid}/chats/${activeId}/vfs/project`),
+                  snapshot
+                );
+              } catch (err) {
+                console.error("Failed to save VFS", err);
+              }
+            }
           } else if (evt.t === "error") {
             throw new Error(evt.d || "Request failed");
           } else if (evt.t === "done") {
@@ -1377,6 +1508,41 @@ export default function ChatInterface({
                           ))}
                         </div>
                       )}
+
+                      {/* Download button (file or project zip) */}
+                      {(() => {
+                        const dl = downloads[msg.id] ?? req?.download;
+                        if (!dl) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              triggerDownload(dl.filename, dl.dataUrl);
+                            }}
+                            className="inline-flex items-center gap-2 px-3 py-1.5 mt-1.5 rounded-xl text-xs font-medium text-white transition-all hover:opacity-90"
+                            style={{
+                              background: "linear-gradient(135deg, #7c3aed, #2563eb)",
+                            }}
+                          >
+                            <svg
+                              className="w-3.5 h-3.5"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"
+                              />
+                            </svg>
+                            Download {dl.filename}
+                          </button>
+                        );
+                      })()}
 
                       {/* Action & Metadata Bar */}
                       <div className="flex items-center gap-2.5 px-1.5 text-[10px] text-zinc-400">

@@ -122,22 +122,34 @@ function Header({
 export default function ProjectPreview({
   vfs,
   height = 420,
+  force = false,
 }: {
   vfs: Vfs;
   height?: number;
+  force?: boolean;
 }) {
   const [open, setOpen] = useState(true);
   const [maximized, setMaximized] = useState(false);
   const files = vfs?.files;
 
-  const { template, sandpackFiles, hasProject } = useMemo(() => {
+  const { template, sandpackFiles, hasProject, hasFiles } = useMemo(() => {
     if (!files || Object.keys(files).length === 0) {
-      return { template: "vanilla" as Template, sandpackFiles: {} as Record<string, string>, hasProject: false };
+      return { template: "vanilla" as Template, sandpackFiles: {} as Record<string, string>, hasProject: false, hasFiles: false };
     }
     const t = detectTemplate(files);
-    return { template: t, sandpackFiles: buildSandpackFiles(files, t), hasProject: t !== "vanilla" };
-  }, [files]);
+    // `force` (e.g. via /preview) shows the preview even if we can't confidently
+    // detect the framework — default an unknown layout to the react template.
+    const effective = force && t === "vanilla" ? ("react" as Template) : t;
+    return {
+      template: effective,
+      sandpackFiles: buildSandpackFiles(files, effective),
+      hasProject: force || effective !== "vanilla",
+      hasFiles: true,
+    };
+  }, [files, force]);
 
+  // Nothing to preview at all.
+  if (!hasFiles) return null;
   if (!hasProject || Object.keys(sandpackFiles).length === 0) return null;
 
   // Maximized view — constrained to the chat main column below the top header

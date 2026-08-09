@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { runAgent } from "../../../lib/agent/run";
-import { AGENT_TOOLS } from "../../../lib/agent/tools";
+import { AGENT_TOOLS, READ_TOOLS } from "../../../lib/agent/tools";
 import { VirtualFileSystem } from "../../../lib/vfs/VirtualFileSystem";
 import { createVfsTools } from "../../../lib/vfs/vfsTools";
 import type { AgentStreamEvent } from "../../../lib/agent/types";
@@ -114,7 +114,9 @@ export async function POST(request: Request) {
 
       const tools = [
         ...(searchEnabled ? AGENT_TOOLS : []),
-        ...(conversationId ? createVfsTools(vfs, agentEmit) : []),
+        // read_url is available in any conversation, independent of the search
+        // toggle (reading a link isn't the same as web search).
+        ...(conversationId ? [...READ_TOOLS, ...createVfsTools(vfs, agentEmit)] : []),
       ];
 
       try {

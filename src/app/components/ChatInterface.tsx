@@ -52,6 +52,9 @@ const ProjectPreview = dynamic(() => import("./ProjectPreview"), {
   loading: () => null,
 });
 
+import { SLASH_COMMANDS, commandQueryFromInput } from "../../lib/commands";
+import type { SlashCommand } from "../../lib/commands";
+
 // Suggested prompt starter cards for empty state
 const STARTER_PROMPTS = [
   {
@@ -183,6 +186,13 @@ export default function ChatInterface({
   const [downloads, setDownloads] = useState<
     Record<string, { filename: string; dataUrl: string; size?: number }>
   >({});
+
+  // Slash-command auto-complete state.
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [commandQuery, setCommandQuery] = useState("");
+  const [commandIndex, setCommandIndex] = useState(0);
+  // Forces the project preview to show (set by the /preview command).
+  const [forcePreview, setForcePreview] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -468,6 +478,7 @@ export default function ChatInterface({
     setVfsFiles(null);
     setTempVfsId(null);
     setDownloads({});
+    setForcePreview(false);
     setInput("");
     if (window.innerWidth < 768) setSidebarOpen(false);
     inputRef.current?.focus();
@@ -479,6 +490,7 @@ export default function ChatInterface({
     setVfsFiles({ files: {}, dirs: [] });
     setTempVfsId(genId());
     setDownloads({});
+    setForcePreview(false);
     setInput("");
     if (window.innerWidth < 768) setSidebarOpen(false);
     inputRef.current?.focus();
@@ -490,6 +502,7 @@ export default function ChatInterface({
     setTempMessages([]);
     setTempVfsId(null);
     setDownloads({});
+    setForcePreview(false);
     setInput("");
     if (window.innerWidth < 768) setSidebarOpen(false);
   }
@@ -768,6 +781,17 @@ export default function ChatInterface({
     if (!text && !attachedImage) return;
     if (!user) return;
 
+    // Slash command → run the client-side action (e.g. /preview) instead of
+    // sending it to the agent as a normal message.
+    if (text.startsWith("/")) {
+      const cmd = SLASH_COMMANDS.find(
+        (c) => c.command === text.toLowerCase()
+      );
+      if (cmd && runSlashCommand(cmd)) {
+        return;
+      }
+    }
+
     if (attachedImage) {
       const imgText = attachedImage.extractedText?.trim();
       const imgHeader = `🖼️ **[Attached Image: ${attachedImage.file.name}]**\n\n📝 **Extracted Text:**\n"""\n${imgText || "(No text detected)"}\n"""`;
@@ -841,7 +865,73 @@ export default function ChatInterface({
     processQueue();
   }
 
+  // Commands matching the current "/xyz" query.
+  const filteredCommands = useMemo(() => {
+    const q = commandQuery.trim().toLowerCase();
+    if (!q) return SLASH_COMMANDS;
+    return SLASH_COMMANDS.filter((c) => c.command.toLowerCase().includes(q));
+  }, [commandQuery]);
+
+  // Run a slash command client-side. Returns true if consumed (not sent to the
+  // agent). Unknown / future commands fall through to a normal message.
+  function runSlashCommand(cmd: SlashCommand): boolean {
+    switch (cmd.command) {
+      case "/preview":
+        setForcePreview(true);
+        setCommandOpen(false);
+        setInput("");
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  function selectCommand(cmd: SlashCommand) {
+    setCommandOpen(false);
+    if (!runSlashCommand(cmd)) {
+      setInput(cmd.command + " ");
+    }
+    inputRef.current?.focus();
+  }
+
+  function onInputChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    const v = e.target.value;
+    setInput(v);
+    const inCommand = v.startsWith("/") && !v.includes(" ");
+    setCommandOpen(inCommand);
+    if (inCommand) setCommandQuery(commandQueryFromInput(v));
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // Command auto-complete keyboard navigation.
+    if (commandOpen && filteredCommands.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setCommandIndex((i) => (i + 1) % filteredCommands.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setCommandIndex(
+          (i) => (i - 1 + filteredCommands.length) % filteredCommands.length
+        );
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        selectCommand(filteredCommands[commandIndex]!);
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        selectCommand(filteredCommands[commandIndex]!);
+        return;
+      }
+      if (e.key === "Escape") {
+        setCommandOpen(false);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey && settings.enterToSend) {
       e.preventDefault();
       sendMessage();
@@ -1691,13 +1781,42 @@ export default function ChatInterface({
         {/* Live project preview (Sandpack) */}
         <div className="px-3 sm:px-4 pb-2 z-10 w-full max-w-full">
           <div className="max-w-4xl w-full mx-auto">
-            <ProjectPreview vfs={vfsFiles} />
+            <ProjectPreview vfs={vfsFiles} force={forcePreview} />
           </div>
         </div>
 
         {/* Floating Input Dock */}
         <div className="border-t border-[var(--sidebar-border)] bg-background/90 backdrop-blur-md p-2.5 sm:p-4 z-20 w-full max-w-full">
           <div className="max-w-4xl w-full mx-auto space-y-2">
+            {/* Slash command auto-complete */}
+            {commandOpen && filteredCommands.length > 0 && (
+              <div className="relative">
+                <div className="absolute bottom-2 left-0 right-0 z-30 overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-xl">
+                  <div className="max-h-56 overflow-y-auto py-1">
+                    {filteredCommands.map((cmd, i) => (
+                      <button
+                        key={cmd.command}
+                        type="button"
+                        onMouseEnter={() => setCommandIndex(i)}
+                        onClick={() => selectCommand(cmd)}
+                        className={`w-full flex items-center justify-between gap-3 px-3 py-2 text-left text-sm transition-colors ${
+                          i === commandIndex
+                            ? "bg-zinc-100 dark:bg-zinc-800"
+                            : "hover:bg-zinc-50 dark:hover:bg-zinc-800/60"
+                        }`}
+                      >
+                        <span className="font-semibold text-indigo-600 dark:text-indigo-400">
+                          {cmd.command}
+                        </span>
+                        <span className="truncate text-xs text-zinc-500">
+                          {cmd.description}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="glass-card rounded-2xl p-1.5 sm:p-2.5 shadow-lg border border-zinc-200/90 dark:border-zinc-800/90 focus-within:border-indigo-500/60 dark:focus-within:border-indigo-500/60 transition-all">
               {/* Attached Image Preview Card */}
               {attachedImage && (
@@ -1754,7 +1873,7 @@ export default function ChatInterface({
                 <textarea
                   ref={inputRef}
                   value={input}
-                  onChange={(e) => setInput(e.target.value)}
+                  onChange={onInputChange}
                   onKeyDown={handleKeyDown}
                   placeholder={`Message ${activeGpt.name}…`}
                   rows={1}

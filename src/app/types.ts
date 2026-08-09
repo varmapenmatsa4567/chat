@@ -1,10 +1,12 @@
 import type { User } from "firebase/auth";
+import type { MermaidDiagram } from "../lib/diagram";
 
 export type Message = {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: Date;
+  diagrams?: MermaidDiagram[];
 };
 
 export type ChatMeta = {
@@ -46,6 +48,8 @@ export type InFlightRequest = {
   download?: { filename: string; dataUrl: string; size?: number };
   // Live agent activity feed (reasoning + tool calls/results).
   activity?: AgentActivityItem[];
+  // Mermaid diagrams the agent generated for this reply.
+  diagrams?: MermaidDiagram[];
 };
 
 export type CustomGpt = {

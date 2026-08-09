@@ -45,6 +45,9 @@ import type {
   SearchSource,
   AgentActivityItem,
 } from "../types";
+import type { MermaidDiagram } from "../../lib/diagram";
+
+import DiagramCard from "./diagrams/DiagramCard";
 
 // Live project preview (Sandpack). Loaded lazily to keep the initial bundle small.
 const ProjectPreview = dynamic(() => import("./ProjectPreview"), {
@@ -305,6 +308,7 @@ export default function ChatInterface({
           role: data.role,
           content: data.content ?? "",
           timestamp: new Date(data.createdAt ?? Date.now()),
+          diagrams: Array.isArray(data.diagrams) ? data.diagrams : undefined,
         };
       });
       setMessages(msgs);
@@ -556,13 +560,20 @@ export default function ChatInterface({
         setDownloads((prev) => ({ ...prev, [messageId]: dl }));
       }
     };
+    const diagrams = inFlightRef.current.find((r) => r.id === entry.id)?.diagrams;
 
     if (entry.tempMode) {
       const id = genId();
       persistDownload(id);
       setTempMessages((prev) => [
         ...prev,
-        { id, role: "assistant", content, timestamp: new Date(entry.userCreatedAt + 1) },
+        {
+          id,
+          role: "assistant",
+          content,
+          timestamp: new Date(entry.userCreatedAt + 1),
+          diagrams: diagrams?.length ? diagrams : undefined,
+        },
       ]);
       removeInFlight(entry.id);
       return;
@@ -582,6 +593,7 @@ export default function ChatInterface({
       role: "assistant",
       content,
       createdAt: entry.userCreatedAt + 1,
+      ...(diagrams?.length ? { diagrams } : {}),
     });
   }
 
@@ -671,6 +683,7 @@ export default function ChatInterface({
             args?: string;
             ok?: boolean;
             detail?: string;
+            diagram?: MermaidDiagram;
           };
           try {
             evt = JSON.parse(line);
@@ -707,6 +720,12 @@ export default function ChatInterface({
             updateInFlight(entry.id, (r) => ({
               ...r,
               activity: [...(r.activity ?? []), { kind: "tool_result", name, ok, detail }],
+            }));
+          } else if (evt.t === "diagram" && evt.diagram) {
+            const diagram = evt.diagram;
+            updateInFlight(entry.id, (r) => ({
+              ...r,
+              diagrams: [...(r.diagrams ?? []), diagram],
             }));
           } else if (evt.t === "download" && evt.dataUrl) {
             const filename = evt.filename ?? "file";
@@ -1719,6 +1738,24 @@ export default function ChatInterface({
                           </button>
                         );
                       })()}
+
+                      {/* Mermaid diagrams */}
+                      {!isUser &&
+                        (() => {
+                          const diagrams = req?.diagrams ?? msg.diagrams;
+                          if (!diagrams || diagrams.length === 0) return null;
+                          return (
+                            <div className="w-full max-w-full space-y-2">
+                              {diagrams.map((d, i) => (
+                                <DiagramCard
+                                  key={`${msg.id}-${i}`}
+                                  id={`mermaid-${msg.id}-${i}`}
+                                  diagram={d}
+                                />
+                              ))}
+                            </div>
+                          );
+                        })()}
 
                       {/* Action & Metadata Bar */}
                       <div className="flex items-center gap-2.5 px-1.5 text-[10px] text-zinc-400">

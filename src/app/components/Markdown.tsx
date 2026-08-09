@@ -152,6 +152,11 @@ export default function Markdown({ content }: MarkdownProps) {
           pre: ({ node, children }) => (
             <CodeBlock language={getCodeLanguage(node)}>{children}</CodeBlock>
           ),
+          img: ({ src, alt, ...props }) => {
+            if (!src) return null;
+            // eslint-disable-next-line @next/next/no-img-element
+            return <img src={src} alt={alt ?? ""} {...props} />;
+          },
         }}
       >
         {content}

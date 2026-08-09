@@ -22,6 +22,7 @@ export type AgentStreamEvent =
   | { type: "tool_call"; name: string; args: string }
   | { type: "tool_result"; name: string; ok: boolean; detail?: string }
   | { type: "vfs"; snapshot: { files?: Record<string, string>; dirs?: string[] } }
+  | { type: "diagram"; diagram: import("../diagram").MermaidDiagram }
   | { type: "sources"; sources: SearchSource[] }
   | { type: "download"; filename: string; dataUrl: string; size?: number }
   | { type: "error"; message: string }

@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { runAgent } from "../../../lib/agent/run";
 import { AGENT_TOOLS, READ_TOOLS } from "../../../lib/agent/tools";
+import { createDiagramTool } from "../../../lib/agent/tools/generateDiagram";
 import { VirtualFileSystem } from "../../../lib/vfs/VirtualFileSystem";
 import { createVfsTools } from "../../../lib/vfs/vfsTools";
 import type { AgentStreamEvent } from "../../../lib/agent/types";
@@ -41,6 +42,16 @@ const VFS_HINT: ChatCompletionMessageParam = {
     "2. When the user asks for a single file, call download_file to let them download it.\n" +
     "3. When the user asks for a whole project/folder, call download_project to zip the entire virtual filesystem and emit it as a downloadable .zip.\n" +
     "4. Keep your chat reply short: summarize what you created and (optionally) show the file tree, but do not inline full file contents.",
+};
+
+// Tells the model when to use generate_diagram (and not to overuse it).
+const DIAGRAM_HINT: ChatCompletionMessageParam = {
+  role: "system",
+  content:
+    "You can create visual diagrams with the generate_diagram tool when a diagram materially improves the explanation.\n" +
+    "Use it for: flowcharts (workflows, algorithms, processes, decision trees, login flows), sequence diagrams (API requests, service-to-service or client/server interactions), ER diagrams (database schemas, table relationships), class diagrams (OOP / TypeScript classes), state diagrams (state machines, order/authentication lifecycle), mindmaps (hierarchical concepts, brainstorming), timelines (events, milestones), and architecture diagrams (microservices, cloud, system components).\n" +
+    "When you call generate_diagram, provide a valid Mermaid `code` string and the matching diagramType, then keep your surrounding text short and reference the diagram.\n" +
+    "Do NOT overuse diagrams: for simple questions (e.g. \"What is React?\", \"What is REST?\", \"What does map() do?\") give a normal text answer unless a visual genuinely clarifies relationships, flow, or hierarchy.",
 };
 
 function messageOf(err: unknown): string {
@@ -96,6 +107,9 @@ export async function POST(request: Request) {
           case "vfs":
             emit({ t: "vfs", files: evt.snapshot });
             break;
+          case "diagram":
+            emit({ t: "diagram", diagram: evt.diagram });
+            break;
           case "download":
             emit({ t: "download", filename: evt.filename, dataUrl: evt.dataUrl, size: evt.size });
             break;
@@ -114,6 +128,9 @@ export async function POST(request: Request) {
 
       const tools = [
         ...(searchEnabled ? AGENT_TOOLS : []),
+        // generate_diagram is always available so any answer can include a
+        // visual diagram.
+        createDiagramTool(agentEmit),
         // read_url is available in any conversation, independent of the search
         // toggle (reading a link isn't the same as web search).
         ...(conversationId ? [...READ_TOOLS, ...createVfsTools(vfs, agentEmit)] : []),
@@ -124,6 +141,7 @@ export async function POST(request: Request) {
           const hints: ChatCompletionMessageParam[] = [];
           if (searchEnabled) hints.push(SEARCH_HINT);
           if (conversationId) hints.push(VFS_HINT);
+          hints.push(DIAGRAM_HINT);
           const history: ChatCompletionMessageParam[] = [...hints, ...messages];
 
           await runAgent({

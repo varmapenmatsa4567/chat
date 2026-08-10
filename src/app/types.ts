@@ -55,6 +55,9 @@ export type InFlightRequest = {
   // AI Teacher Mode: request teaches a topic as a step-by-step SVG lesson.
   teacherMode?: boolean;
   teacherLesson?: TeacherLesson;
+  // True once the stream's "done"/"error" frame was received (no more steps
+  // will arrive). Lets the streaming lesson player know playback can end.
+  streamFinished?: boolean;
 };
 
 export type CustomGpt = {

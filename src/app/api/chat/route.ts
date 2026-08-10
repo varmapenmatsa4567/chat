@@ -3,7 +3,10 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat/completio
 import { runAgent } from "../../../lib/agent/run";
 import { AGENT_TOOLS, READ_TOOLS } from "../../../lib/agent/tools";
 import { createDiagramTool } from "../../../lib/agent/tools/generateDiagram";
-import { createTeacherLessonTool } from "../../../lib/agent/tools/generateTeacherLesson";
+import {
+  createStartTeacherLessonTool,
+  createAddTeacherStepTool,
+} from "../../../lib/agent/tools/generateTeacherLesson";
 import { VirtualFileSystem } from "../../../lib/vfs/VirtualFileSystem";
 import { createVfsTools } from "../../../lib/vfs/vfsTools";
 import type { AgentStreamEvent } from "../../../lib/agent/types";
@@ -61,16 +64,18 @@ const TEACHER_HINT: ChatCompletionMessageParam = {
   role: "system",
   content:
     "You are now operating in AI Teacher Mode. Your job is to teach the user's requested topic visually and step by step.\n" +
-    "Create a structured TeacherLesson by calling the generate_teacher_lesson tool. Do NOT paste lesson content into the chat; always return the full structured lesson through the tool.\n" +
-    "Each lesson step MUST contain: (1) a short title, (2) natural narration that can be spoken aloud, and (3) a complete standalone SVG visualization of the whiteboard state at that exact step.\n" +
+    "Build the lesson with TWO tools: call start_teacher_lesson once with the title, then call add_teacher_step ONCE PER STEP in order. Do NOT paste lesson content into the chat; the tools stream each step to the viewer as it is ready.\n" +
+    "Each step MUST contain: (1) a short title, (2) natural narration that can be spoken aloud, and (3) a complete standalone SVG visualization of the whiteboard state at that exact step.\n" +
     "Rules for the lesson:\n" +
     "- Progress logically from simple to advanced; each step introduces or modifies ONE important idea.\n" +
+    "- ALWAYS COMPLETE THE WHOLE LESSON. Teach the topic from start to finish like a thorough teacher — cover all essential ideas in the correct order and do NOT stop early or truncate. If the topic has more ground to cover, keep adding steps until it is fully explained.\n" +
     "- A lesson should generally contain 4-10 steps depending on topic complexity; do not pad simple topics, and do not put everything into one SVG — each step gets its own SVG.\n" +
     "- Keep narration to 1-3 concise, natural spoken sentences that explain exactly what is shown in the current step's SVG. The narration and SVG MUST correspond: never describe an element that is not in the SVG, and never draw something you don't explain.\n" +
     "- Keep visual identity consistent across steps: when an object continues across steps, keep its position and appearance stable; use highlights, arrows, labels, and faded/crossed-out elements to communicate changes.\n" +
     "- Prioritize clarity and educational value over decoration.\n" +
     "SVG rules:\n" +
     "- Every SVG must be complete and standalone, beginning with: <svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 800 500\">\n" +
+    "- ALL STEPS MUST USE THE SAME VIEWBOX AND CANVAS SIZE (0 0 800 500) so the whiteboard is the same size on every step and never jumps or resizes between steps.\n" +
     "- Use only SVG primitives: rect, circle, ellipse, line, polyline, polygon, path, text, g.\n" +
     "- Never use scripts, event handlers, images, external URLs, iframes, or objects. No external dependencies between steps.\n" +
     "- Keep diagrams readable and focused; avoid enormous SVGs with thousands of elements.",
@@ -136,6 +141,12 @@ export async function POST(request: Request) {
           case "teacher_lesson":
             emit({ t: "teacher_lesson", lesson: evt.lesson });
             break;
+          case "teacher_lesson_start":
+            emit({ t: "teacher_lesson_start", title: evt.title, introduction: evt.introduction });
+            break;
+          case "teacher_step":
+            emit({ t: "teacher_step", step: evt.step });
+            break;
           case "download":
             emit({ t: "download", filename: evt.filename, dataUrl: evt.dataUrl, size: evt.size });
             break;
@@ -160,8 +171,13 @@ export async function POST(request: Request) {
         // generate_diagram is always available so any answer can include a
         // visual diagram.
         createDiagramTool(agentEmit),
-        // In AI Teacher Mode, the agent can build a step-by-step SVG lesson.
-        ...(teacherMode ? [createTeacherLessonTool(agentEmit)] : []),
+        // In AI Teacher Mode, the agent streams a step-by-step lesson.
+        ...(teacherMode
+          ? [
+              createStartTeacherLessonTool(agentEmit),
+              createAddTeacherStepTool(agentEmit),
+            ]
+          : []),
         // read_url is available in any conversation, independent of the search
         // toggle (reading a link isn't the same as web search).
         ...(conversationId ? [...READ_TOOLS, ...createVfsTools(vfs, agentEmit)] : []),
@@ -183,6 +199,10 @@ export async function POST(request: Request) {
             messages: history,
             tools,
             onEvent: agentEmit,
+            // Teacher lessons are built one tool call per step across multiple
+            // turns, so give the loop more room to accumulate all steps and
+            // never truncate a lesson partway through.
+            maxIterations: teacherMode ? 24 : undefined,
           });
 
           // Return the updated VFS snapshot so the client persists it per

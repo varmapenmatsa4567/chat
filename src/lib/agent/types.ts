@@ -24,6 +24,8 @@ export type AgentStreamEvent =
   | { type: "vfs"; snapshot: { files?: Record<string, string>; dirs?: string[] } }
   | { type: "diagram"; diagram: import("../diagram").MermaidDiagram }
   | { type: "teacher_lesson"; lesson: import("../teacher").TeacherLesson }
+  | { type: "teacher_lesson_start"; title: string; introduction?: string }
+  | { type: "teacher_step"; step: import("../teacher").TeacherStep }
   | { type: "sources"; sources: SearchSource[] }
   | { type: "download"; filename: string; dataUrl: string; size?: number }
   | { type: "clear_content" }

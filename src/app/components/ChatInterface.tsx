@@ -47,7 +47,7 @@ import type {
 } from "../types";
 import type { MermaidDiagram } from "../../lib/diagram";
 import { parseTeacherLesson } from "../../lib/teacher";
-import type { TeacherLesson } from "../../lib/teacher";
+import type { TeacherLesson, TeacherStep } from "../../lib/teacher";
 
 import DiagramCard from "./diagrams/DiagramCard";
 import TeacherLessonPlayer from "./teacher/TeacherLesson";
@@ -697,6 +697,9 @@ export default function ChatInterface({
             detail?: string;
             diagram?: MermaidDiagram;
             lesson?: TeacherLesson;
+            title?: string;
+            introduction?: string;
+            step?: TeacherStep;
           };
           try {
             evt = JSON.parse(line);
@@ -748,6 +751,35 @@ export default function ChatInterface({
               ...r,
               teacherLesson: evt.lesson,
             }));
+          } else if (evt.t === "teacher_lesson_start") {
+            updateInFlight(entry.id, (r) => {
+              const steps: TeacherStep[] = r.teacherLesson?.steps ?? [];
+              return {
+                ...r,
+                teacherLesson: {
+                  title: evt.title ?? "Lesson",
+                  introduction: evt.introduction,
+                  steps,
+                },
+              };
+            });
+          } else if (evt.t === "teacher_step") {
+            const newStep = evt.step;
+            if (newStep) {
+              updateInFlight(entry.id, (r) => {
+                const steps: TeacherStep[] = [
+                  ...(r.teacherLesson?.steps ?? []),
+                  newStep,
+                ];
+                return {
+                  ...r,
+                  teacherLesson: {
+                    title: r.teacherLesson?.title ?? "Lesson",
+                    steps,
+                  },
+                };
+              });
+            }
           } else if (evt.t === "download" && evt.dataUrl) {
             const filename = evt.filename ?? "file";
             const dataUrl = evt.dataUrl;
@@ -776,6 +808,7 @@ export default function ChatInterface({
             throw new Error(evt.d || "Request failed");
           } else if (evt.t === "done") {
             finished = true;
+            updateInFlight(entry.id, (r) => ({ ...r, streamFinished: true }));
             break;
           }
         }
@@ -1802,9 +1835,12 @@ export default function ChatInterface({
                             );
                           }
                           if (!lesson) return null;
+                          // No more steps once the request finished (or is a
+                          // committed/persisted message with no in-flight req).
+                          const complete = !req || !!req.streamFinished;
                           return (
                             <div className="w-full max-w-full space-y-2 mt-1">
-                              <TeacherLessonPlayer lesson={lesson} />
+                              <TeacherLessonPlayer lesson={lesson} complete={complete} />
                             </div>
                           );
                         })()}

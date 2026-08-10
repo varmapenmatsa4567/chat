@@ -113,6 +113,9 @@ export async function POST(request: Request) {
           case "download":
             emit({ t: "download", filename: evt.filename, dataUrl: evt.dataUrl, size: evt.size });
             break;
+          case "clear_content":
+            emit({ t: "clear_content" });
+            break;
           case "error":
             emit({ t: "error", d: evt.message });
             break;

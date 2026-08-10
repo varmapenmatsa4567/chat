@@ -25,6 +25,7 @@ export type AgentStreamEvent =
   | { type: "diagram"; diagram: import("../diagram").MermaidDiagram }
   | { type: "sources"; sources: SearchSource[] }
   | { type: "download"; filename: string; dataUrl: string; size?: number }
+  | { type: "clear_content" }
   | { type: "error"; message: string }
   | { type: "done" };
 

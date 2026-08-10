@@ -693,6 +693,9 @@ export default function ChatInterface({
           if (evt.t === "content" && typeof evt.d === "string") {
             full += evt.d;
             updateInFlight(entry.id, (r) => ({ ...r, content: full }));
+          } else if (evt.t === "clear_content") {
+            full = "";
+            updateInFlight(entry.id, (r) => ({ ...r, content: "" }));
           } else if (evt.t === "status") {
             updateInFlight(entry.id, (r) => ({ ...r, searching: true }));
           } else if (evt.t === "sources") {

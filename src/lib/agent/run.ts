@@ -100,19 +100,16 @@ export async function runAgent(opts: AgentRunOptions): Promise<{
     let content = "";
     const toolCalls: { id: string; name: string; arguments: string }[] = [];
     const indexToArray = new Map<number, number>();
-
-    // Content is buffered per-turn and only forwarded to the client when the
-    // turn is a content-only (final) turn. Tool-call turns can stream junk in
-    // `delta.content` on some providers (e.g. the literal string "[object
-    // Object]"); we discard that so it never reaches the UI.
-    const turnContent: string[] = [];
+    let emittedContent = false;
 
     try {
       for await (const chunk of stream) {
         const delta = chunk.choices[0]?.delta;
         if (typeof delta?.content === "string" && delta.content) {
           content += delta.content;
-          turnContent.push(delta.content);
+          // Stream tokens live so the UI shows text as it arrives.
+          opts.onEvent({ type: "content", text: delta.content });
+          emittedContent = true;
         }
         // Some reasoning models stream `reasoning_content`; surface it live.
         const reasoning = (delta as { reasoning_content?: unknown } | undefined)
@@ -138,8 +135,13 @@ export async function runAgent(opts: AgentRunOptions): Promise<{
       throw err;
     }
 
-    // If the model decided to call tools, execute them and loop for the answer.
+    // If the model decided to call tools, discard any preamble text it emitted
+    // before the tool call (providers sometimes leak "[object Object]" or a
+    // brief intro that the model doesn't intend as a final answer).
     if (toolCalls.length > 0) {
+      if (emittedContent) {
+        opts.onEvent({ type: "clear_content" });
+      }
       history.push({
         role: "assistant",
         content: content || null,
@@ -217,10 +219,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<{
       continue; // one more turn to produce the final answer
     }
 
-    // No tool calls this turn → final answer. Forward the buffered content now.
-    for (const t of turnContent) {
-      opts.onEvent({ type: "content", text: t });
-    }
+    // No tool calls this turn → content was already streamed live above.
     finalContent = content;
     break;
   }

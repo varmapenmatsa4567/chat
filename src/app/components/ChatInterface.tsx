@@ -47,7 +47,7 @@ import type {
 } from "../types";
 import type { MermaidDiagram } from "../../lib/diagram";
 import { parseTeacherLesson } from "../../lib/teacher";
-import type { TeacherLesson, TeacherStep } from "../../lib/teacher";
+import type { TeacherLesson } from "../../lib/teacher";
 
 import DiagramCard from "./diagrams/DiagramCard";
 import TeacherLessonPlayer from "./teacher/TeacherLesson";
@@ -697,9 +697,6 @@ export default function ChatInterface({
             detail?: string;
             diagram?: MermaidDiagram;
             lesson?: TeacherLesson;
-            title?: string;
-            introduction?: string;
-            step?: TeacherStep;
           };
           try {
             evt = JSON.parse(line);
@@ -751,35 +748,6 @@ export default function ChatInterface({
               ...r,
               teacherLesson: evt.lesson,
             }));
-          } else if (evt.t === "teacher_lesson_start") {
-            updateInFlight(entry.id, (r) => {
-              const steps: TeacherStep[] = r.teacherLesson?.steps ?? [];
-              return {
-                ...r,
-                teacherLesson: {
-                  title: evt.title ?? "Lesson",
-                  introduction: evt.introduction,
-                  steps,
-                },
-              };
-            });
-          } else if (evt.t === "teacher_step") {
-            const newStep = evt.step;
-            if (newStep) {
-              updateInFlight(entry.id, (r) => {
-                const steps: TeacherStep[] = [
-                  ...(r.teacherLesson?.steps ?? []),
-                  newStep,
-                ];
-                return {
-                  ...r,
-                  teacherLesson: {
-                    title: r.teacherLesson?.title ?? "Lesson",
-                    steps,
-                  },
-                };
-              });
-            }
           } else if (evt.t === "download" && evt.dataUrl) {
             const filename = evt.filename ?? "file";
             const dataUrl = evt.dataUrl;
@@ -1827,10 +1795,35 @@ export default function ChatInterface({
                           const lesson = req?.teacherLesson ?? msg.teacherLesson;
                           // In-flight teacher request still generating the lesson.
                           if (!lesson && req?.teacherMode) {
+                            const activity = req.activity ?? [];
+                            const reasoning = activity
+                              .filter((a) => a.kind === "reasoning")
+                              .map((a) => a.text)
+                              .join("");
+                            const building = activity.some((a) => a.kind === "tool_call");
                             return (
-                              <div className="mt-2 flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-300 rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/80 dark:bg-zinc-900/60 px-4 py-3">
-                                <span className="animate-pulse">👨‍🏫</span>
-                                <span>Preparing lesson…</span>
+                              <div className="mt-2 rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/80 dark:bg-zinc-900/60 px-4 py-3 space-y-2">
+                                <div className="flex items-center gap-2 text-sm font-medium text-zinc-700 dark:text-zinc-200">
+                                  <span className="animate-pulse">👨‍🏫</span>
+                                  <span>Preparing lesson…</span>
+                                  <span className="ml-auto text-[11px] font-normal text-zinc-400 animate-pulse">
+                                    {building ? "Building steps…" : "Thinking…"}
+                                  </span>
+                                </div>
+                                {reasoning && (
+                                  <div className="text-xs text-zinc-500 dark:text-zinc-400 italic whitespace-pre-wrap border-l-2 border-indigo-300 dark:border-indigo-700 pl-2 max-h-40 overflow-y-auto">
+                                    {reasoning}
+                                  </div>
+                                )}
+                                {req.content && (
+                                  <div className="text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap">
+                                    {req.content}
+                                  </div>
+                                )}
+                                <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
+                                  This can take a moment…
+                                </div>
                               </div>
                             );
                           }

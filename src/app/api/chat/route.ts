@@ -3,10 +3,7 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat/completio
 import { runAgent } from "../../../lib/agent/run";
 import { AGENT_TOOLS, READ_TOOLS } from "../../../lib/agent/tools";
 import { createDiagramTool } from "../../../lib/agent/tools/generateDiagram";
-import {
-  createStartTeacherLessonTool,
-  createAddTeacherStepTool,
-} from "../../../lib/agent/tools/generateTeacherLesson";
+import { createTeacherLessonTool } from "../../../lib/agent/tools/generateTeacherLesson";
 import { VirtualFileSystem } from "../../../lib/vfs/VirtualFileSystem";
 import { createVfsTools } from "../../../lib/vfs/vfsTools";
 import type { AgentStreamEvent } from "../../../lib/agent/types";
@@ -64,7 +61,7 @@ const TEACHER_HINT: ChatCompletionMessageParam = {
   role: "system",
   content:
     "You are now operating in AI Teacher Mode. Your job is to teach the user's requested topic visually and step by step.\n" +
-    "Build the lesson with TWO tools: call start_teacher_lesson once with the title, then call add_teacher_step ONCE PER STEP in order. Do NOT paste lesson content into the chat; the tools stream each step to the viewer as it is ready.\n" +
+    "Build the whole lesson by calling generate_teacher_lesson ONCE with ALL steps included, covering the topic completely from start to finish. Do NOT call it multiple times and do NOT stop early — include every step needed to fully explain the topic (generally 4-10 steps). Do NOT paste lesson content into the chat; return the full structured lesson through the tool.\n" +
     "Each step MUST contain: (1) a short title, (2) natural narration that can be spoken aloud, and (3) a complete standalone SVG visualization of the whiteboard state at that exact step.\n" +
     "Rules for the lesson:\n" +
     "- Progress logically from simple to advanced; each step introduces or modifies ONE important idea.\n" +
@@ -171,13 +168,8 @@ export async function POST(request: Request) {
         // generate_diagram is always available so any answer can include a
         // visual diagram.
         createDiagramTool(agentEmit),
-        // In AI Teacher Mode, the agent streams a step-by-step lesson.
-        ...(teacherMode
-          ? [
-              createStartTeacherLessonTool(agentEmit),
-              createAddTeacherStepTool(agentEmit),
-            ]
-          : []),
+        // In AI Teacher Mode, the agent produces a complete lesson in one call.
+        ...(teacherMode ? [createTeacherLessonTool(agentEmit)] : []),
         // read_url is available in any conversation, independent of the search
         // toggle (reading a link isn't the same as web search).
         ...(conversationId ? [...READ_TOOLS, ...createVfsTools(vfs, agentEmit)] : []),
@@ -199,10 +191,6 @@ export async function POST(request: Request) {
             messages: history,
             tools,
             onEvent: agentEmit,
-            // Teacher lessons are built one tool call per step across multiple
-            // turns, so give the loop more room to accumulate all steps and
-            // never truncate a lesson partway through.
-            maxIterations: teacherMode ? 24 : undefined,
           });
 
           // Return the updated VFS snapshot so the client persists it per

@@ -3,6 +3,7 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat/completio
 import { runAgent } from "../../../lib/agent/run";
 import { AGENT_TOOLS, READ_TOOLS } from "../../../lib/agent/tools";
 import { createDiagramTool } from "../../../lib/agent/tools/generateDiagram";
+import { createTeacherLessonTool } from "../../../lib/agent/tools/generateTeacherLesson";
 import { VirtualFileSystem } from "../../../lib/vfs/VirtualFileSystem";
 import { createVfsTools } from "../../../lib/vfs/vfsTools";
 import type { AgentStreamEvent } from "../../../lib/agent/types";
@@ -23,6 +24,7 @@ type ChatRequestBody = {
   searchEnabled?: boolean;
   conversationId?: string;
   vfs?: VfsSnapshot | null;
+  teacherMode?: boolean;
 };
 
 // Tells the model it may search the web when the answer could be current info.
@@ -54,6 +56,26 @@ const DIAGRAM_HINT: ChatCompletionMessageParam = {
     "Do NOT overuse diagrams: for simple questions (e.g. \"What is React?\", \"What is REST?\", \"What does map() do?\") give a normal text answer unless a visual genuinely clarifies relationships, flow, or hierarchy.",
 };
 
+// Teacher Mode instructions — used when the user starts a message with /teacher.
+const TEACHER_HINT: ChatCompletionMessageParam = {
+  role: "system",
+  content:
+    "You are now operating in AI Teacher Mode. Your job is to teach the user's requested topic visually and step by step.\n" +
+    "Create a structured TeacherLesson by calling the generate_teacher_lesson tool. Do NOT paste lesson content into the chat; always return the full structured lesson through the tool.\n" +
+    "Each lesson step MUST contain: (1) a short title, (2) natural narration that can be spoken aloud, and (3) a complete standalone SVG visualization of the whiteboard state at that exact step.\n" +
+    "Rules for the lesson:\n" +
+    "- Progress logically from simple to advanced; each step introduces or modifies ONE important idea.\n" +
+    "- A lesson should generally contain 4-10 steps depending on topic complexity; do not pad simple topics, and do not put everything into one SVG — each step gets its own SVG.\n" +
+    "- Keep narration to 1-3 concise, natural spoken sentences that explain exactly what is shown in the current step's SVG. The narration and SVG MUST correspond: never describe an element that is not in the SVG, and never draw something you don't explain.\n" +
+    "- Keep visual identity consistent across steps: when an object continues across steps, keep its position and appearance stable; use highlights, arrows, labels, and faded/crossed-out elements to communicate changes.\n" +
+    "- Prioritize clarity and educational value over decoration.\n" +
+    "SVG rules:\n" +
+    "- Every SVG must be complete and standalone, beginning with: <svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 800 500\">\n" +
+    "- Use only SVG primitives: rect, circle, ellipse, line, polyline, polygon, path, text, g.\n" +
+    "- Never use scripts, event handlers, images, external URLs, iframes, or objects. No external dependencies between steps.\n" +
+    "- Keep diagrams readable and focused; avoid enormous SVGs with thousands of elements.",
+};
+
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -73,6 +95,7 @@ export async function POST(request: Request) {
   }
 
   const searchEnabled = Boolean(body.searchEnabled);
+  const teacherMode = Boolean(body.teacherMode);
   const conversationId = body.conversationId?.trim() || null;
 
   const client = new OpenAI({ baseURL, apiKey });
@@ -110,6 +133,9 @@ export async function POST(request: Request) {
           case "diagram":
             emit({ t: "diagram", diagram: evt.diagram });
             break;
+          case "teacher_lesson":
+            emit({ t: "teacher_lesson", lesson: evt.lesson });
+            break;
           case "download":
             emit({ t: "download", filename: evt.filename, dataUrl: evt.dataUrl, size: evt.size });
             break;
@@ -134,6 +160,8 @@ export async function POST(request: Request) {
         // generate_diagram is always available so any answer can include a
         // visual diagram.
         createDiagramTool(agentEmit),
+        // In AI Teacher Mode, the agent can build a step-by-step SVG lesson.
+        ...(teacherMode ? [createTeacherLessonTool(agentEmit)] : []),
         // read_url is available in any conversation, independent of the search
         // toggle (reading a link isn't the same as web search).
         ...(conversationId ? [...READ_TOOLS, ...createVfsTools(vfs, agentEmit)] : []),
@@ -144,6 +172,7 @@ export async function POST(request: Request) {
           const hints: ChatCompletionMessageParam[] = [];
           if (searchEnabled) hints.push(SEARCH_HINT);
           if (conversationId) hints.push(VFS_HINT);
+          if (teacherMode) hints.push(TEACHER_HINT);
           hints.push(DIAGRAM_HINT);
           const history: ChatCompletionMessageParam[] = [...hints, ...messages];
 

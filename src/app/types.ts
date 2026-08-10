@@ -1,5 +1,6 @@
 import type { User } from "firebase/auth";
 import type { MermaidDiagram } from "../lib/diagram";
+import type { TeacherLesson } from "../lib/teacher";
 
 export type Message = {
   id: string;
@@ -7,6 +8,7 @@ export type Message = {
   content: string;
   timestamp: Date;
   diagrams?: MermaidDiagram[];
+  teacherLesson?: TeacherLesson;
 };
 
 export type ChatMeta = {
@@ -50,6 +52,9 @@ export type InFlightRequest = {
   activity?: AgentActivityItem[];
   // Mermaid diagrams the agent generated for this reply.
   diagrams?: MermaidDiagram[];
+  // AI Teacher Mode: request teaches a topic as a step-by-step SVG lesson.
+  teacherMode?: boolean;
+  teacherLesson?: TeacherLesson;
 };
 
 export type CustomGpt = {

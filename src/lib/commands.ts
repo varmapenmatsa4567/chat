@@ -14,6 +14,10 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     command: "/preview",
     description: "Show the live preview of the current project",
   },
+  {
+    command: "/teacher",
+    description: "AI Teacher Mode — step-by-step visual lesson with narration",
+  },
   // Future commands go here.
 ];
 

@@ -46,8 +46,11 @@ import type {
   AgentActivityItem,
 } from "../types";
 import type { MermaidDiagram } from "../../lib/diagram";
+import { parseTeacherLesson } from "../../lib/teacher";
+import type { TeacherLesson } from "../../lib/teacher";
 
 import DiagramCard from "./diagrams/DiagramCard";
+import TeacherLessonPlayer from "./teacher/TeacherLesson";
 
 // Live project preview (Sandpack). Loaded lazily to keep the initial bundle small.
 const ProjectPreview = dynamic(() => import("./ProjectPreview"), {
@@ -309,6 +312,11 @@ export default function ChatInterface({
           content: data.content ?? "",
           timestamp: new Date(data.createdAt ?? Date.now()),
           diagrams: Array.isArray(data.diagrams) ? data.diagrams : undefined,
+          teacherLesson: (() => {
+            if (!data.teacherLesson) return undefined;
+            const parsed = parseTeacherLesson(data.teacherLesson);
+            return parsed.ok ? parsed.lesson : undefined;
+          })(),
         };
       });
       setMessages(msgs);
@@ -561,6 +569,7 @@ export default function ChatInterface({
       }
     };
     const diagrams = inFlightRef.current.find((r) => r.id === entry.id)?.diagrams;
+    const teacherLesson = inFlightRef.current.find((r) => r.id === entry.id)?.teacherLesson;
 
     if (entry.tempMode) {
       const id = genId();
@@ -573,6 +582,7 @@ export default function ChatInterface({
           content,
           timestamp: new Date(entry.userCreatedAt + 1),
           diagrams: diagrams?.length ? diagrams : undefined,
+          ...(teacherLesson ? { teacherLesson } : {}),
         },
       ]);
       removeInFlight(entry.id);
@@ -594,6 +604,7 @@ export default function ChatInterface({
       content,
       createdAt: entry.userCreatedAt + 1,
       ...(diagrams?.length ? { diagrams } : {}),
+      ...(teacherLesson ? { teacherLesson } : {}),
     });
   }
 
@@ -638,6 +649,7 @@ export default function ChatInterface({
         body: JSON.stringify({
           messages: buildHistory(entry),
           searchEnabled: settingsRef.current.searchEnabled ?? false,
+          teacherMode: entry.teacherMode ?? false,
           conversationId: activeId ?? tempVfsId ?? undefined,
           vfs: vfsRef.current,
           provider: activeProviderRef.current
@@ -684,6 +696,7 @@ export default function ChatInterface({
             ok?: boolean;
             detail?: string;
             diagram?: MermaidDiagram;
+            lesson?: TeacherLesson;
           };
           try {
             evt = JSON.parse(line);
@@ -729,6 +742,11 @@ export default function ChatInterface({
             updateInFlight(entry.id, (r) => ({
               ...r,
               diagrams: [...(r.diagrams ?? []), diagram],
+            }));
+          } else if (evt.t === "teacher_lesson" && evt.lesson) {
+            updateInFlight(entry.id, (r) => ({
+              ...r,
+              teacherLesson: evt.lesson,
             }));
           } else if (evt.t === "download" && evt.dataUrl) {
             const filename = evt.filename ?? "file";
@@ -802,6 +820,15 @@ export default function ChatInterface({
     let text = (textToSend ?? input).trim();
     if (!text && !attachedImage) return;
     if (!user) return;
+
+    // /teacher — switch to AI Teacher Mode. Strip the command prefix and send
+    // the remaining topic to the agent (not consumed client-side).
+    let teacherMode = false;
+    if (/^\/teacher\b/i.test(text)) {
+      teacherMode = true;
+      text = text.replace(/^\/teacher\b/i, "").trim();
+      if (!text) text = "Explain this topic step by step";
+    }
 
     // Slash command → run the client-side action (e.g. /preview) instead of
     // sending it to the agent as a normal message.
@@ -882,6 +909,7 @@ export default function ChatInterface({
       userMessageId: userMsgId,
       userCreatedAt,
       userContent: text,
+      teacherMode,
     };
     addInFlight(entry);
     processQueue();
@@ -1756,6 +1784,27 @@ export default function ChatInterface({
                                   diagram={d}
                                 />
                               ))}
+                            </div>
+                          );
+                        })()}
+
+                      {/* AI Teacher Mode lesson */}
+                      {!isUser &&
+                        (() => {
+                          const lesson = req?.teacherLesson ?? msg.teacherLesson;
+                          // In-flight teacher request still generating the lesson.
+                          if (!lesson && req?.teacherMode) {
+                            return (
+                              <div className="mt-2 flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-300 rounded-2xl border border-zinc-200/80 dark:border-zinc-800/80 bg-zinc-50/80 dark:bg-zinc-900/60 px-4 py-3">
+                                <span className="animate-pulse">👨‍🏫</span>
+                                <span>Preparing lesson…</span>
+                              </div>
+                            );
+                          }
+                          if (!lesson) return null;
+                          return (
+                            <div className="w-full max-w-full space-y-2 mt-1">
+                              <TeacherLessonPlayer lesson={lesson} />
                             </div>
                           );
                         })()}

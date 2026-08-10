@@ -23,6 +23,7 @@ export type AgentStreamEvent =
   | { type: "tool_result"; name: string; ok: boolean; detail?: string }
   | { type: "vfs"; snapshot: { files?: Record<string, string>; dirs?: string[] } }
   | { type: "diagram"; diagram: import("../diagram").MermaidDiagram }
+  | { type: "teacher_lesson"; lesson: import("../teacher").TeacherLesson }
   | { type: "sources"; sources: SearchSource[] }
   | { type: "download"; filename: string; dataUrl: string; size?: number }
   | { type: "clear_content" }

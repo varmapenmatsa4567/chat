@@ -23,7 +23,7 @@ export function createTeacherLessonTool(
       function: {
         name: "generate_teacher_lesson",
         description:
-          "Create a COMPLETE, step-by-step visual lesson that teaches a topic like a teacher on a whiteboard, covering the entire topic from start to finish. Call this ONCE and include ALL steps. Each step is a standalone SVG visualization plus narration that will be spoken aloud. Do NOT stop early — include every step needed to fully explain the topic (generally 4-10 steps). Do NOT paste lesson content into the chat; always return the full structured lesson through this tool.",
+          "Create a COMPLETE, step-by-step visual lesson that teaches a topic like a teacher on a whiteboard, covering the entire topic from start to finish. Call this ONCE and include ALL steps. Each step is a Mermaid diagram plus narration that will be spoken aloud. Do NOT stop early — include every step needed to fully explain the topic (generally 4-10 steps). Do NOT paste lesson content into the chat; always return the full structured lesson through this tool.",
         parameters: {
           type: "object",
           properties: {
@@ -38,7 +38,7 @@ export function createTeacherLessonTool(
             steps: {
               type: "array",
               description:
-                "ALL the steps of the lesson, in order, covering the topic completely. Each step introduces or modifies ONE idea and has its own standalone SVG plus narration. The narration (1-3 sentences) must describe exactly what is shown in the step's SVG, and the SVG must show exactly what the narration describes. Keep the same objects in the same positions across steps, using highlights, arrows, labels, and faded/crossed-out elements to communicate changes.",
+                "ALL the steps of the lesson, in order, covering the topic completely. Each step introduces or modifies ONE idea and has its own Mermaid diagram plus narration. The narration (1-3 sentences) must describe exactly what is shown in the step's Mermaid diagram, and the diagram must show exactly what the narration describes. Build each step's diagram progressively on top of the previous one so the lesson reads like a teacher building up the whiteboard.",
               items: {
                 type: "object",
                 properties: {
@@ -52,13 +52,13 @@ export function createTeacherLessonTool(
                     type: "number",
                     description: "Optional minimum display time in seconds.",
                   },
-                  svg: {
+                  mermaid: {
                     type: "string",
                     description:
-                      "A complete, standalone SVG markup string. Must begin with <svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 800 500\"> and use only SVG primitives (rect, circle, ellipse, line, polyline, polygon, path, text, g). No scripts, no event handlers, no images, no external URLs, no iframes or objects. Prefer readable, focused diagrams; do not generate enormous SVGs with thousands of elements.",
+                      "Valid Mermaid source code for this step's diagram. The first line MUST be an exact type declaration (flowchart TD, sequenceDiagram, classDiagram, stateDiagram-v2 — never plain 'stateDiagram' — or erDiagram). Put one statement per line; no semicolons; one node/edge per line. If a label contains ( ) [ ] { } or :, wrap it in double quotes, e.g. A[\"value (x)\"]. Examples: flowchart TD then 'A[Start] --> B{Check?}' then 'B -->|Yes| C[Done]'; sequenceDiagram then 'A->>B: Request'; stateDiagram-v2 then '[*] --> Idle'. Keep each diagram focused and readable.",
                   },
                 },
-                required: ["id", "title", "narration", "svg"],
+                required: ["id", "title", "narration", "mermaid"],
                 additionalProperties: false,
               },
             },
